@@ -1,0 +1,122 @@
+<!DOCTYPE HTML>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iConvo - Chat App</title>
+    <link rel="stylesheet" type="text/css" href="themes.css">
+    <link rel="stylesheet" type="text/css" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdn.jsdelivr.net/npm/picmo@latest/dist/umd/picmo.js"></script>
+  </head>
+  <body onload="onload()">
+      <!-- Hamburger Menu -->
+    <div class="hamburger-container">
+      <button class="hamburger" id="hamburgerBtn" onclick="toggleSidebar()">
+        <div class="hamburger-line"></div>
+        <div class="hamburger-line"></div>
+        <div class="hamburger-line"></div>
+      </button>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h2><i class="fa-solid fa-comments"></i> Chat Rooms</h2>
+        <p>Select or create a room to start chatting</p>
+
+      </div>
+      
+      <div class="room-section">
+        <h3><i class="fa-solid fa-users"></i> Available Rooms</h3>
+        <ul class="room-list" id="roomList">
+          <!-- Room items will be added here dynamically -->
+        </ul>
+        <button class="add-room-btn" onclick="showAddRoomModal()">
+          <i class="fa-solid fa-plus"></i> Create New Room
+        </button>
+      </div>
+    </div>
+
+    <!-- Sidebar Overlay -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+    <!-- Add Room Modal -->
+    <div class="modal" id="addRoomModal">
+      <div class="modal-content">
+        <h3>Create New Room</h3>
+        <input type="text" class="modal-input" id="newRoomName" placeholder="Enter room name..." maxlength="30">
+        <div class="modal-buttons">
+          <button class="modal-btn cancel" onclick="closeAddRoomModal()">Cancel</button>
+          <button class="modal-btn create" onclick="createNewRoom()">Create Room</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="header-container">
+      <h1 class="Title">iConvo</h1>
+      <div class="theme-dropdown">
+        <button class="theme-toggle"><i class="fa-solid fa-palette"></i></button>
+        <div class="theme-selector">
+          <h3><i class="fa-solid fa-palette"></i> Themes</h3>
+          <div class="theme-options">
+            <button class="theme-btn" data-theme="" title="Light Theme">
+              <div class="theme-preview light-preview"></div>
+              <span>Light</span>
+            </button>
+            <button class="theme-btn" data-theme="theme-dark" title="Dark Theme">
+              <div class="theme-preview dark-preview"></div>
+              <span>Dark</span>
+            </button>
+            <button class="theme-btn" data-theme="theme-blue" title="Blue Theme">
+              <div class="theme-preview blue-preview"></div>
+              <span>Blue</span>
+            </button>
+            <button class="theme-btn" data-theme="theme-purple" title="Purple Theme">
+              <div class="theme-preview purple-preview"></div>
+              <span>Purple</span>
+            </button>
+            <button class="theme-btn" data-theme="theme-green" title="Green Theme">
+              <div class="theme-preview green-preview"></div>
+              <span>Green</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="Main">
+      
+
+      <!-- Chat Box -->
+      <div class="name">
+        <span><i class="fa-solid fa-user"></i></span>
+        <input type="text" id="NameInput" class="NameInput" value="Anonymous" maxlength="20" placeholder="Enter your name">
+      </div>
+      <h2 id="RoomID" class="RoomID">Chatroom: <span class="disconnected">Not Connected</span></h2>
+
+      <ul class="messageContainer" id="messageContainer">
+        <!-- Messages will be added here dynamically -->
+        <li class="messageFeedback">
+          <p class="feedback" id="feedback"></p>
+        </li>
+      </ul>
+
+      <!-- Message Form -->
+      <form id="messageForm">
+        <div class="message-input-container">
+          <input type="text" name="message" id="messageInput" class="messageInput" placeholder="Type a message...">
+          <button type="button" id="emoji-button" class="emoji-button"><i class="fa-regular fa-face-smile"></i></button>
+          <button type="submit" class="sendButton"><span>Send</span> <i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+        <div id="emoji-picker-container"></div>
+      </form>
+    </div>
+    <h3 class="totalUser" id="totalUser">Users Online: 0</h3>
+
+    <!-- Include Required Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>

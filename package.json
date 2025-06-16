@@ -1,0 +1,29 @@
+{
+  "name": "iconvo-chat-app",
+  "version": "1.0.0",
+  "description": "A real-time chat application using Socket.io",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "chat",
+    "socket.io",
+    "real-time",
+    "messaging"
+  ],
+  "author": "Piyush",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "moment-timezone": "^0.6.0",
+    "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
