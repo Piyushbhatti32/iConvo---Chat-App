@@ -35,7 +35,7 @@ io.on('connection', (socket) => {
     if (room) {
       const sockets = io.sockets.adapter.rooms.get(room);
       const count = sockets ? sockets.size : 0;
-      
+
       // Update room users count
       if (roomUsers[room]) {
         const activeUsers = roomUsers[room].size;
@@ -180,7 +180,7 @@ io.on('connection', (socket) => {
   socket.on("send", (data) => {
     const userRoom = rooms[socket.id];
     const username = usernames[socket.id];
-    
+
     // Extract room and message from data
     const room = typeof data === 'object' ? data.room : data;
     const message = typeof data === 'object' ? data.message : arguments[1];
@@ -200,10 +200,10 @@ io.on('connection', (socket) => {
       };
 
       console.log(`Message from ${username} in ${room}: ${message}`);
-      
+
       // Send to everyone in the room including sender
       io.to(room).emit("receive", formattedMessage);
-      
+
       // Send confirmation back to sender
       socket.emit("message_sent", formattedMessage);
     } else {
@@ -241,15 +241,43 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle background state
+  socket.on('background', (data) => {
+    console.log(`User ${data.username} in room ${data.room} went to background`);
+    // Keep the connection but mark as inactive
+    if (data.room && roomUsers[data.room]) {
+      socket.backgroundState = true;
+      updateUserCount(data.room);
+    }
+  });
+
+  // Handle foreground state
+  socket.on('foreground', (data) => {
+    console.log(`User ${data.username} in room ${data.room} returned to foreground`);
+    // Mark as active and refresh room state
+    if (data.room && roomUsers[data.room]) {
+      socket.backgroundState = false;
+      updateUserCount(data.room);
+
+      // Re-emit room information
+      const roomInfo = {
+        room: data.room,
+        users: Array.from(roomUsernames[data.room] || []),
+        count: roomUsers[data.room].size
+      };
+      socket.emit('room info', roomInfo);
+    }
+  });
+
   // Handle user disconnection
   socket.on('disconnect', () => {
     try {
       const room = rooms[socket.id];
       const username = usernames[socket.id];
-      
+
       if (room) {
         console.log(`User ${username} disconnecting from room ${room}`);
-        
+
         // Notify room before removing user
         if (username) {
           io.to(room).emit('receive', `Server: ${username} left the chat`);
@@ -285,7 +313,7 @@ io.on('connection', (socket) => {
       // Clean up user tracking
       delete rooms[socket.id];
       delete usernames[socket.id];
-      
+
       console.log(`User disconnected: ${socket.id}${username ? ` (${username})` : ''}`);
     } catch (error) {
       console.error('Error handling disconnect:', error);
@@ -318,7 +346,7 @@ const networkInterfaces = os.networkInterfaces();
 server.listen(PORT, '0.0.0.0', () => {
   console.log('\nServer is running and accessible at:');
   console.log(`- Local: http://localhost:${PORT}`);
-  
+
   // Log all network interfaces
   Object.keys(networkInterfaces).forEach((interfaceName) => {
     networkInterfaces[interfaceName].forEach((interface) => {
@@ -328,7 +356,7 @@ server.listen(PORT, '0.0.0.0', () => {
       }
     });
   });
-  
+
   console.log(`\nStatic files served from: ${staticDir}`);
   console.log('\nTo access from other devices on the network, use any of the Network URLs listed above.');
 });
