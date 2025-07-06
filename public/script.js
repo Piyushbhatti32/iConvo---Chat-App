@@ -37,6 +37,9 @@ function onload() {
   loadSavedTheme();
   populateRoomList();
 
+  // Load saved username if any
+  loadUsernameFromSession();
+
   // Initialize socket connection
   initializeSocket();
 
@@ -431,6 +434,7 @@ function Connect() {
 
   // Update local variables
   currentUsername = username;
+  saveUsernameToSession(username);
 
   // Update UI to show connecting status
   if (chatRoom) {
@@ -821,6 +825,28 @@ function escapeHtml(text) {
   });
 }
 
+// Function to save username to session storage
+function saveUsernameToSession(username) {
+  if (username) {
+    sessionStorage.setItem('currentUsername', username);
+    console.log('Username saved to session:', username);
+  }
+}
+
+// Function to load username from session storage
+function loadUsernameFromSession() {
+  const savedUsername = sessionStorage.getItem('currentUsername');
+  if (savedUsername) {
+    currentUsername = savedUsername;
+    if (usernameInput) {
+      usernameInput.value = savedUsername;
+    }
+    console.log('Username loaded from session:', savedUsername);
+    return savedUsername;
+  }
+  return null;
+}
+
 // Socket.io Connection
 function initializeSocket() {
   try {
@@ -835,6 +861,19 @@ function initializeSocket() {
       autoConnect: true
     });
 
+    // Add handler for username_updated event
+    socket.on("username_updated", function(data) {
+      if (data.username) {
+        currentUsername = data.username;
+        if (usernameInput) {
+          usernameInput.value = data.username;
+        }
+        saveUsernameToSession(data.username);
+        console.log('Username updated:', data.username);
+      }
+    });
+
+    // Username already taken
     socket.on("username_taken", function(username) {
       showFeedbackMessage(`Username '${username}' is already taken in this room. Using a temporary name.`);
       // Clear saved username since it's no longer valid
@@ -866,6 +905,13 @@ function initializeSocket() {
     // Handle connection events
     socket.on("connect", function() {
       console.log("Connected to server with ID:", socket.id);
+      
+      // Try to restore username from session
+      const savedUsername = loadUsernameFromSession();
+      if (savedUsername) {
+        socket.emit("restore_username", { username: savedUsername });
+      }
+      
       if (chatRoom) {
         chatRoom.innerHTML = "Chatroom: <span class='connected'>Connected</span>";
       }
