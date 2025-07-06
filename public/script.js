@@ -372,16 +372,16 @@ function deleteRoom(index) {
 
     // If we're currently in the deleted room, disconnect first
     if (currentRoom === roomName) {
-      // Leave the room on the server
+      // Leave the room on the server and notify about deletion
       if (socket && socket.connected) {
-        socket.emit("leave", currentRoom);
+        socket.emit("leave", { room: roomName, username: currentUsername });
+        socket.emit("room_deleted", { room: roomName });  // Add notification about room deletion
       }
 
       // Update UI
       currentRoom = null;
       if (chatRoom) {
-        chatRoom.innerHTML =
-          "Chatroom: <span class='disconnected'>Not Connected</span>";
+        chatRoom.innerHTML = "Chatroom: <span class='disconnected'>Not Connected</span>";
       }
       if (totalUsers) {
         totalUsers.textContent = "Users Online: 0";
@@ -392,17 +392,15 @@ function deleteRoom(index) {
         messageContainer.innerHTML = "";
       }
 
-      addMessage(
-        "System",
-        "Room was deleted. Please join another room.",
-        "left"
-      );
+      addMessage("System", "Room was deleted. Please join another room.", "left");
+    } else {
+      // If we're not in the room being deleted, just notify server about deletion
+      if (socket && socket.connected) {
+        socket.emit("room_deleted", { room: roomName });
+      }
     }
 
-    // Reset counters before removing the room
-    resetRoomCounters(roomName);
-
-    // Remove the room from the list
+    // Remove room from saved rooms
     savedRooms.splice(index, 1);
     populateRoomList();
   }
@@ -850,229 +848,49 @@ function loadUsernameFromSession() {
 // Socket.io Connection
 function initializeSocket() {
   try {
-    // Connect to the server
-    console.log("Initializing socket connection...");
-    socket = io({
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-      autoConnect: true
-    });
+    socket = io();
 
-    // Add handler for username_updated event
-    socket.on("username_updated", function(data) {
-      if (data.username) {
-        currentUsername = data.username;
-        if (usernameInput) {
-          usernameInput.value = data.username;
-        }
-        saveUsernameToSession(data.username);
-        console.log('Username updated:', data.username);
-      }
-    });
-
-    // Username already taken
-    socket.on("username_taken", function(username) {
-      showFeedbackMessage(`Username '${username}' is already taken in this room. Using a temporary name.`);
-      // Clear saved username since it's no longer valid
-      sessionStorage.removeItem('currentUsername');
-      if (usernameInput) {
-        usernameInput.value = "Anonymous";
-        currentUsername = "Anonymous";
-      }
-    });
-
-    // Handle reconnection attempts
-    socket.on("reconnecting", (attemptNumber) => {
-      console.log("Attempting to reconnect...", attemptNumber);
-      showFeedbackMessage("Reconnecting to server...", true);
-      if (chatRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='connecting'>Reconnecting...</span>";
-      }
-    });
-
-    // Add connection error handling
-    socket.on("connect_error", function(error) {
-      console.error("Connection error:", error);
-      showFeedbackMessage("Error connecting to server: " + error.message);
-      if (chatRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='disconnected'>Connection Error</span>";
-      }
-    });
-
-    // Handle connection events
-    socket.on("connect", function() {
-      console.log("Connected to server with ID:", socket.id);
-      
-      // Try to restore username from session
-      const savedUsername = loadUsernameFromSession();
-      if (savedUsername) {
-        socket.emit("restore_username", { username: savedUsername });
-      }
-      
-      if (chatRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='connected'>Connected</span>";
-      }
+    socket.on("connect", () => {
+      console.log("Connected to server");
       showFeedbackMessage("Connected to server", true);
-
-      // If we were already in a room, rejoin it
-      if (currentRoom && currentUsername) {
-        console.log("Rejoining room:", currentRoom, "as", currentUsername);
-        joinRoom(currentRoom);
-      }
     });
 
-    // Handle disconnect events
+    socket.on("connect_error", (error) => {
+      console.error("Connection error:", error);
+      showFeedbackMessage("Connection error: " + error.message);
+    });
+
     socket.on("disconnect", (reason) => {
-        console.log("Disconnected:", reason);
-        showFeedbackMessage("Disconnected from server: " + reason, true);
-        if (chatRoom) {
-            chatRoom.innerHTML = "Chatroom: <span class='disconnected'>Disconnected</span>";
-        }
-    });
-
-    // Handle received messages
-    socket.on("receive", function(data) {
-      console.log("Received message:", data);
-
-      if (typeof data === 'object') {
-        // Handle formatted messages
-        const isOwnMessage = data.username === currentUsername;
-        addMessage(data.username, data.message, isOwnMessage ? 'right' : 'left');
-      } else if (typeof data === 'string') {
-        // Handle system messages
-        if (data.startsWith('Server:')) {
-          showFeedbackMessage(data.substring(7).trim(), false);
-        } else {
-          addMessage('System', data, 'left');
-        }
-      }
-    });
-
-    // Handle message errors
-    socket.on("message_error", function(error) {
-      console.error("Message error:", error);
-      showFeedbackMessage(error, false);
-    });
-
-    // Handle successful message sending
-    socket.on("message_sent", function(data) {
-      // Message is now confirmed by the server
-      // If we want to show any confirmation, we can do it here
-      console.log("Message confirmed by server:", data);
-    });
-
-    // Handle disconnection
-    socket.on("disconnect", () => {
-      console.log("Disconnected from server");
-
-      // Update UI
+      console.log("Disconnected:", reason);
+      showFeedbackMessage("Disconnected from server: " + reason);
+      
+      // Update UI to show disconnected state
       if (chatRoom) {
-        chatRoom.innerHTML = 'Chatroom: <span class="disconnected">Not Connected</span>';
+        chatRoom.innerHTML = "Chatroom: <span class='disconnected'>Disconnected</span>";
       }
-
-      // Reset room state
-      currentRoom = null;
-      connectedUsers = 0;
-      updateTotalUsers({ active: 0, total: 0 });
-
-      // Show feedback
-      showFeedbackMessage("Disconnected from server. Attempting to reconnect...", true);
-
-      // Try to reconnect automatically
-      if (socket.io.opts.reconnection !== false) {
-        console.log("Attempting to reconnect...");
+      if (totalUsers) {
+        totalUsers.textContent = "Users Online: 0";
       }
-    });
-
-    // Handle reconnect attempt
-    socket.io.on("reconnect_attempt", () => {
-      console.log("Attempting to reconnect to server...");
-      showFeedbackMessage("Attempting to reconnect...", false);
-    });
-
-    // Handle successful reconnection
-    socket.io.on("reconnect", () => {
-      console.log("Reconnected to server");
-      showFeedbackMessage("Reconnected to server!", true);
-
-      // Attempt to rejoin previous room if any
-      if (sessionStorage.getItem('currentRoom')) {
-        setTimeout(() => {
-          loadRoomFromSession();
-        }, 1000);
-      }
-    });
-
-    // Handle room join confirmation
-    socket.on("join", function(data) {
-      const room = typeof data === "object" ? data.room : data;
-      const username = typeof data === "object" ? data.username : currentUsername;
-
-      console.log("Join confirmed for room:", room, "as", username);
-
-      currentRoom = room;
-      // Update username if server assigned a number to Anonymous
-      if (username && username.startsWith("Anonymous") && usernameInput) {
-        currentUsername = username;
-        usernameInput.value = username;
-      }
-
-      if (chatRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='connected'>" + escapeHtml(room) + "</span>";
-      }
-
-      // Update saved rooms list and highlight current room
-      updateRoomInList(room);
-      populateRoomList(); // Refresh room list to highlight current room
-
-      // Clear message container when joining a new room
-      if (messageContainer) {
-        messageContainer.innerHTML = "";
-        // Add welcome message as a feedback message only
-        showFeedbackMessage(`Welcome to ${room}! You are connected as ${username}.`, true);
-      }
-
-      // Save to session storage after successful join
-      saveRoomToSession(room);
-    });
-
-    // Handle user count updates
-    socket.on("user count", function(data) {
-      console.log("Received user count update:", data);
-      updateTotalUsers(data);
-    });
-
-    // Handle user joined notifications
-    socket.on("userJoined", function(data) {
-      if (data.username && data.room === currentRoom) {
-        addMessage("System", `${data.username} joined the room.`, "left");
-      }
-    });
-
-    // Handle join errors
-    socket.on("join_error", function(error) {
-      console.error("Failed to join room:", error);
-      showFeedbackMessage(error, false); // Show error without persistence
-      // Keep the current room if join failed
-      if (chatRoom && currentRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='connected'>" + escapeHtml(currentRoom) + "</span>";
-      }
+      
+      // Try to reconnect
+      setTimeout(() => {
+        if (!socket.connected) {
+          socket.connect();
+        }
+      }, 5000);
     });
 
     // Handle username taken error
-    socket.on("username_taken", function(username) {
-      showFeedbackMessage("Username '" + username + "' is already taken in this room");
-      if (usernameInput) {
-        usernameInput.classList.add("error");
-        setTimeout(() => usernameInput.classList.remove("error"), 3000);
-      }
+    socket.on("username_taken", (username) => {
+      console.log("Username taken:", username);
+      showFeedbackMessage(`Username "${username}" is already taken in this room`);
     });
+
+    // Other event handlers...
+    // ...existing code...
   } catch (error) {
-    console.error("Error in socket initialization:", error);
-    showFeedbackMessage("Failed to initialize chat connection");
+    console.error("Error initializing socket:", error);
+    showFeedbackMessage("Failed to initialize connection: " + error.message);
   }
 }
 

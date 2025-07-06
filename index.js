@@ -48,6 +48,7 @@ io.on('connection', (socket) => {
       
       console.log(`Username restored for ${socket.id}: ${data.username}`);
     }
+  });
 
   // Function to update user count in a room
   function updateUserCount(room) {
@@ -92,22 +93,26 @@ io.on('connection', (socket) => {
       }
 
       // For anonymous users, keep their number if they already have one
-      if (username === 'Anonymous' && usernames[socket.id] && usernames[socket.id].startsWith('Anonymous')) {
-        username = usernames[socket.id];
-      } else if (roomUsernames[room].has(username)) {
-        // Handle duplicate usernames
-        if (username.startsWith('Anonymous')) {
-          let counter = anonymousCount[room] + 1;
+      if (username === 'Anonymous') {
+        if (usernames[socket.id] && usernames[socket.id].startsWith('Anonymous')) {
+          username = usernames[socket.id];
+        } else {
+          // Atomically get next anonymous number
+          anonymousCount[room] = (anonymousCount[room] || 0) + 1;
+          let counter = anonymousCount[room];
+          
+          // Keep incrementing until we find an unused number
           while (roomUsernames[room].has(`Anonymous${counter}`)) {
             counter++;
+            anonymousCount[room] = counter;
           }
+          
           username = `Anonymous${counter}`;
-          anonymousCount[room] = counter;
-        } else {
-          // For non-anonymous users, reject the connection
-          socket.emit("username_taken", username);
-          return;
         }
+      } else if (roomUsernames[room].has(username)) {
+        // For non-anonymous users, reject the connection
+        socket.emit("username_taken", username);
+        return;
       }
       console.log(`User ${username} (${socket.id}) attempting to join room ${room}`);
 
