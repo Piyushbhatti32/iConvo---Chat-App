@@ -835,6 +835,16 @@ function initializeSocket() {
       autoConnect: true
     });
 
+    socket.on("username_taken", function(username) {
+      showFeedbackMessage(`Username '${username}' is already taken in this room. Using a temporary name.`);
+      // Clear saved username since it's no longer valid
+      sessionStorage.removeItem('currentUsername');
+      if (usernameInput) {
+        usernameInput.value = "Anonymous";
+        currentUsername = "Anonymous";
+      }
+    });
+
     // Handle reconnection attempts
     socket.on("reconnecting", (attemptNumber) => {
       console.log("Attempting to reconnect...", attemptNumber);
