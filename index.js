@@ -120,7 +120,7 @@ io.on('connection', (socket) => {
       const previousRoom = rooms[socket.id];
       if (previousRoom && previousRoom !== room) {
         socket.leave(previousRoom);
-        socket.to(previousRoom).emit("recieve", `Server: ${usernames[socket.id]} left the chat`);
+        socket.to(previousRoom).emit("receive", `Server: ${usernames[socket.id]} left the chat`);
 
         // Remove from room users tracking
         if (roomUsers[previousRoom]) {
@@ -155,7 +155,10 @@ io.on('connection', (socket) => {
 
       // Then notify others in the room if broadcast is true
       if (broadcast) {
+        console.log(`Broadcasting userJoined event for ${username} in room ${room}`);
         socket.to(room).emit("userJoined", { room: room, username: username });
+      } else {
+        console.log(`Not broadcasting userJoined event (broadcast=${broadcast})`);
       }
 
       // Update user count
@@ -164,17 +167,21 @@ io.on('connection', (socket) => {
       console.log(`User ${username} successfully joined room ${room}`);
     } else {
       console.log("Invalid join attempt - missing username or room");
-      socket.emit("recieve", "Server: Error - Username and room are required");
+      socket.emit("receive", "Server: Error - Username and room are required");
     }
   });
 
   // Handle user leaving a room
-  socket.on("leave", (room) => {
+  socket.on("leave", (data) => {
+    // Handle both object format and string format
+    const room = typeof data === 'object' ? data.room : data;
+    const username = typeof data === 'object' ? data.username : usernames[socket.id];
+    
     if (room && rooms[socket.id] === room) {
-      const username = usernames[socket.id];
+      console.log(`User ${username} leaving room ${room}`);
 
       socket.leave(room);
-      socket.to(room).emit("recieve", `Server: ${username} left the chat`);
+      socket.to(room).emit("receive", `Server: ${username} left the chat`);
 
       // Clean up tracking
       delete rooms[socket.id];
@@ -262,6 +269,22 @@ io.on('connection', (socket) => {
       //   username: usernames[socket.id],
       //   theme: data.theme
       // });
+    }
+  });
+
+  // Handle user count requests
+  socket.on('get_user_count', (data) => {
+    const room = data.room;
+    if (room && roomUsers[room]) {
+      const activeUsers = roomUsers[room].size;
+      const sockets = io.sockets.adapter.rooms.get(room);
+      const totalUsers = sockets ? sockets.size : 0;
+      
+      socket.emit('user count', {
+        total: totalUsers,
+        active: activeUsers,
+        room: room
+      });
     }
   });
 

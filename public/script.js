@@ -259,6 +259,23 @@ function joinRoom(roomName) {
       socket.emit("leave", { room: currentRoom, username: currentUsername });
     }
     currentUsername = usernameInput.value || "Anonymous";
+    
+    // Add room to saved rooms if it doesn't exist
+    let roomExists = savedRooms.find(r => r.name === roomName);
+    if (!roomExists) {
+      const roomIcons = ["💬", "💻", "🎲", "🎮", "🎵", "📚", "🌟", "🔥", "⚡", "🎨"];
+      const randomIcon = roomIcons[Math.floor(Math.random() * roomIcons.length)];
+      
+      const newRoom = {
+        name: roomName,
+        users: 0,
+        messages: 0,
+        icon: randomIcon,
+      };
+      savedRooms.push(newRoom);
+      populateRoomList();
+    }
+    
     // Show loading spinner
     if (chatRoom) {
       chatRoom.innerHTML = `<span class='spinner'></span> <span class='connecting'>Joining ${escapeHtml(roomName)}...</span>`;
@@ -285,6 +302,22 @@ function handleJoinConfirmation(data) {
     currentRoom = data.room;
     currentUsername = data.username;
     saveSession(currentUsername, currentRoom);
+    
+    // Ensure room exists in saved rooms
+    let roomExists = savedRooms.find(r => r.name === data.room);
+    if (!roomExists) {
+      const roomIcons = ["💬", "💻", "🎲", "🎮", "🎵", "📚", "🌟", "🔥", "⚡", "🎨"];
+      const randomIcon = roomIcons[Math.floor(Math.random() * roomIcons.length)];
+      
+      const newRoom = {
+        name: data.room,
+        users: 1, // Start with 1 user (the current user)
+        messages: 0,
+        icon: randomIcon,
+      };
+      savedRooms.push(newRoom);
+    }
+    
     if (chatRoom) {
       chatRoom.innerHTML = `Chatroom: <span class='connected'>${escapeHtml(data.room)}</span>`;
       chatRoom.classList.add('flash-highlight');
@@ -294,6 +327,12 @@ function handleJoinConfirmation(data) {
     }
     showFeedbackMessage(`Connected to "${escapeHtml(data.room)}" as ${escapeHtml(data.username)}`, true);
     populateRoomList();
+    
+    // Request current user count for the room
+    if (socket && socket.connected) {
+      socket.emit('get_user_count', { room: data.room });
+    }
+    
     if (messageInput) messageInput.focus();
     joinRoomInProgress = false;
   }
@@ -579,9 +618,6 @@ function sendMessage() {
     messageInput.value = "";
     messageInput.focus();
 
-    // Play sound
-    playMessageSound();
-
     // Update room message count
     const roomEntry = savedRooms.find(room => room.name === currentRoom);
     if (roomEntry) {
@@ -609,9 +645,39 @@ function addMessage(username, message, side) {
 
   // Handle system messages
   if (username === "System") {
+    console.log("Processing system message:", message);
     const isJoinMessage = message.includes("Welcome to") || message.includes("joined the chat");
-    showFeedbackMessage(message, isJoinMessage);
-    if (!isJoinMessage) return; // Don't show other system messages in chat
+    const isLeaveMessage = message.includes("left the chat");
+    
+    console.log(`System message - isJoinMessage: ${isJoinMessage}, isLeaveMessage: ${isLeaveMessage}`);
+    
+    if (isJoinMessage || isLeaveMessage) {
+      console.log("Showing persistent feedback for system message:", message);
+      showFeedbackMessage(message, true);
+      
+      // Extract username from system message for user count updates
+      let extractedUsername = null;
+      if (message.includes("joined the chat")) {
+        extractedUsername = message.replace(" joined the chat", "").replace("Server: ", "");
+      } else if (message.includes("left the chat")) {
+        extractedUsername = message.replace(" left the chat", "").replace("Server: ", "");
+      }
+      
+      console.log("Extracted username from system message:", extractedUsername);
+      
+      // Update user count if we can extract a username
+      if (extractedUsername && currentRoom) {
+        console.log("Requesting user count update for room:", currentRoom);
+        // Request updated user count from server
+        if (socket && socket.connected) {
+          socket.emit("get_user_count", { room: currentRoom });
+        }
+      }
+    } else {
+      console.log("Showing non-persistent feedback for system message:", message);
+      showFeedbackMessage(message, false);
+    }
+    return; // Don't show system messages in chat
   }
 
   // Create message element
@@ -653,64 +719,47 @@ document.querySelectorAll('.messageText').forEach(msg => {
 
 // Function to show feedback message in the feedback element
 function showFeedbackMessage(message, isPersistent) {
-  if (!messageContainer) return;
-
-  // Create a new feedback element for each message to allow multiple messages
-  var feedbackId = "feedback_" + Date.now();
-  var feedbackElement = document.getElementById(feedbackId);
-  var feedbackContainer = null;
-
-  // Always create a new feedback element for join messages
-  if (isPersistent || !feedbackElement) {
-    // First check if there's already a messageFeedback container
-    var existingFeedbacks = document.getElementsByClassName("messageFeedback");
-    if (existingFeedbacks.length > 0) {
-      feedbackContainer = existingFeedbacks[0];
-      // Don't clear existing content for persistent messages
-      if (!isPersistent) {
-        feedbackContainer.innerHTML = "";
-      }
-    } else {
-      // Create new container
-      feedbackContainer = document.createElement("li");
-      feedbackContainer.className = "messageFeedback";
-      messageContainer.appendChild(feedbackContainer);
-    }
-
-    // Create the feedback paragraph with unique ID
-    feedbackElement = document.createElement("p");
-    feedbackElement.id = feedbackId;
-    feedbackElement.style.padding = "8px";
-    feedbackElement.style.margin = "4px 0";
-
-    // Apply special styling for persistent messages like join notifications
-    if (isPersistent) {
-      if (message.includes("joined")) {
-        feedbackElement.style.backgroundColor = "rgba(0, 255, 0, 0.1)";
-        feedbackElement.style.borderLeft = "3px solid #4CAF50";
-      } else if (message.includes("left")) {
-        feedbackElement.style.backgroundColor = "rgba(255, 0, 0, 0.1)";
-        feedbackElement.style.borderLeft = "3px solid #f44336";
-      }
-    }
-    feedbackContainer.appendChild(feedbackElement);
-  } else {
-    // Get the parent container
-    feedbackContainer = feedbackElement.closest(".messageFeedback");
+  console.log(`showFeedbackMessage called - message: "${message}", isPersistent: ${isPersistent}`);
+  
+  if (!messageContainer) {
+    console.error("messageContainer not found");
+    return;
   }
 
-  // Make sure the container is visible
-  if (feedbackContainer) {
-    feedbackContainer.style.display = "block";
+  // Create a simple feedback element
+  const feedbackElement = document.createElement("li");
+  feedbackElement.className = "messageFeedback";
+  feedbackElement.style.padding = "8px";
+  feedbackElement.style.margin = "4px 0";
+  feedbackElement.style.borderRadius = "4px";
+  feedbackElement.style.fontSize = "0.9em";
+  feedbackElement.style.opacity = "0.8";
+
+  // Apply special styling for persistent messages like join notifications
+  if (isPersistent) {
+    if (message.includes("joined")) {
+      feedbackElement.style.backgroundColor = "rgba(0, 255, 0, 0.1)";
+      feedbackElement.style.borderLeft = "3px solid #4CAF50";
+      feedbackElement.style.color = "#4CAF50";
+    } else if (message.includes("left")) {
+      feedbackElement.style.backgroundColor = "rgba(255, 0, 0, 0.1)";
+      feedbackElement.style.borderLeft = "3px solid #f44336";
+      feedbackElement.style.color = "#f44336";
+    } else {
+      feedbackElement.style.backgroundColor = "rgba(74, 144, 226, 0.1)";
+      feedbackElement.style.borderLeft = "3px solid #4a90e2";
+      feedbackElement.style.color = "#4a90e2";
+    }
+  } else {
+    feedbackElement.style.backgroundColor = "rgba(0, 0, 0, 0.05)";
+    feedbackElement.style.color = "var(--text-color)";
   }
 
   // Set the message
   feedbackElement.textContent = message;
 
-  // Add a data attribute to mark if this is persistent
-  if (isPersistent) {
-    feedbackElement.dataset.persistent = "true";
-  }
+  // Add to message container
+  messageContainer.appendChild(feedbackElement);
 
   // Ensure the message container scrolls to show the feedback
   messageContainer.scrollTop = messageContainer.scrollHeight;
@@ -719,14 +768,7 @@ function showFeedbackMessage(message, isPersistent) {
   if (!isPersistent) {
     setTimeout(function() {
       if (feedbackElement && document.body.contains(feedbackElement)) {
-        // Only remove if it's not marked as persistent
-        if (!feedbackElement.dataset.persistent) {
-          feedbackElement.remove();
-          // If the feedback container is empty, hide it
-          if (feedbackContainer && feedbackContainer.children.length === 0) {
-            feedbackContainer.style.display = "none";
-          }
-        }
+        feedbackElement.remove();
       }
     }, 5000);
   }
@@ -894,6 +936,13 @@ function initializeSocket() {
     socket.on("connect", () => {
       console.log("Connected to server");
       showFeedbackMessage("Connected to server", true);
+      
+      // Test socket communication
+      setTimeout(() => {
+        if (socket.connected) {
+          console.log("Socket connection test - connected successfully");
+        }
+      }, 1000);
     });
 
     socket.on("connect_error", (error) => {
@@ -925,6 +974,86 @@ function initializeSocket() {
 
     // Handle join confirmation from server
     socket.on("join", handleJoinConfirmation);
+
+    // Handle user count updates
+    socket.on("user count", (data) => {
+      console.log("Received user count update:", data);
+      updateTotalUsers(data);
+    });
+
+    // Handle user joined events
+    socket.on("userJoined", (data) => {
+      console.log("Received userJoined event:", data);
+      if (data.username && data.room === currentRoom) {
+        console.log(`Showing join feedback for ${data.username} in room ${data.room}`);
+        showFeedbackMessage(`${escapeHtml(data.username)} joined the chat`, true);
+        // Update user count
+        updateTotalUsers(data);
+      } else {
+        console.log(`Ignoring userJoined event - username: ${data.username}, room: ${data.room}, currentRoom: ${currentRoom}`);
+      }
+    });
+
+    // Test userJoined event handling
+    // socket.on("test_userJoined", (data) => {
+    //   console.log("Received test userJoined event:", data);
+    //   showFeedbackMessage("Test: User joined event received", true);
+    // });
+
+    // Handle user left events (from system messages)
+    socket.on("userLeft", (data) => {
+      console.log("User left:", data);
+      if (data.username && data.room === currentRoom) {
+        showFeedbackMessage(`${escapeHtml(data.username)} left the chat`, true);
+        // Update user count
+        updateTotalUsers(data);
+      }
+    });
+
+    // Handle receive messages
+    socket.on("receive", (data) => {
+      console.log("Received message:", data);
+      if (typeof data === 'string') {
+        // Handle system messages
+        console.log("Processing system message:", data);
+        addMessage("System", data, "left");
+      } else if (data.username && data.message) {
+        // Handle user messages
+        const isOwnMessage = data.username === currentUsername;
+        addMessage(data.username, data.message, isOwnMessage ? "right" : "left");
+        
+        // Play sound for messages from others
+        if (!isOwnMessage) {
+          playMessageSound();
+        }
+      }
+    });
+
+    // Handle typing indicators
+    socket.on("typing", (room, username) => {
+      if (room === currentRoom && username !== currentUsername) {
+        showTypingIndicator(username);
+      }
+    });
+
+    socket.on("stop typing", (room, username) => {
+      if (room === currentRoom && username !== currentUsername) {
+        removeTypingIndicator(username);
+      }
+    });
+
+    // Handle message errors
+    socket.on("message_error", (error) => {
+      console.error("Message error:", error);
+      showFeedbackMessage("Message error: " + error);
+    });
+
+    // Handle join errors
+    socket.on("join_error", (error) => {
+      console.error("Join error:", error);
+      showFeedbackMessage("Join error: " + error);
+    });
+
   } catch (error) {
     console.error("Error initializing socket:", error);
     showFeedbackMessage("Failed to initialize connection: " + error.message);
@@ -1119,27 +1248,43 @@ function updateTotalUsers(count) {
       totalUsers.textContent = `Users Online: ${connectedUsers}`;
     }
   }
+  
+  // Also update the current room's user count in the sidebar
+  if (currentRoom) {
+    const roomEntry = savedRooms.find(r => r.name === currentRoom);
+    if (roomEntry && count && typeof count === 'object') {
+      roomEntry.users = count.active || count.total || 0;
+      populateRoomList();
+    }
+  }
 }
 
-// Add visibility change handling
-document.addEventListener('visibilitychange', function() {
-    if (document.hidden) {
-        // Tab is hidden
-        console.log('Tab hidden, marking connection as background');
-        if (socket && socket.connected) {
-            socket.emit('background', { room: currentRoom, username: currentUsername });
-        }
-    } else {
-        // Tab is visible again
-        console.log('Tab visible, checking connection');
-        if (socket) {
-            if (!socket.connected) {
-                console.log('Reconnecting after tab becomes visible');
-                socket.connect();
-            } else if (currentRoom && currentUsername) {
-                console.log('Refreshing room state');
-                socket.emit('foreground', { room: currentRoom, username: currentUsername });
-            }
-        }
-    }
-});
+  // Add visibility change handling
+  document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+          // Tab is hidden
+          console.log('Tab hidden, marking connection as background');
+          if (socket && socket.connected) {
+              socket.emit('background', { room: currentRoom, username: currentUsername });
+          }
+      } else {
+          // Tab is visible again
+          console.log('Tab visible, checking connection');
+          if (socket) {
+              if (!socket.connected) {
+                  console.log('Reconnecting after tab becomes visible');
+                  socket.connect();
+              } else if (currentRoom && currentUsername) {
+                  console.log('Refreshing room state');
+                  socket.emit('foreground', { room: currentRoom, username: currentUsername });
+              }
+          }
+      }
+  });
+
+  // Periodic user count updates (every 30 seconds)
+  setInterval(function() {
+      if (socket && socket.connected && currentRoom) {
+          socket.emit('get_user_count', { room: currentRoom });
+      }
+  }, 30000);
