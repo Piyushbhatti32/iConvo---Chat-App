@@ -67,8 +67,6 @@ function onload() {
     });
   }
 
-
-
   // Add event listeners for theme buttons
   document.querySelectorAll(".theme-btn").forEach((button) => {
     button.addEventListener("click", function() {
@@ -175,12 +173,17 @@ function loadSavedRooms() {
       { name: "Music", users: 0, messages: 0, icon: "🎵" },
     ];
   }
+  console.log("Loaded saved rooms:", savedRooms);
 }
 
 function populateRoomList() {
   const roomList = document.getElementById("roomList");
-  if (!roomList) return;
+  if (!roomList) {
+    console.error("Room list element not found");
+    return;
+  }
 
+  console.log("Populating room list with:", savedRooms);
   roomList.innerHTML = "";
 
   savedRooms.forEach((room, index) => {
@@ -200,8 +203,7 @@ function populateRoomList() {
           <div class="room-icon">${room.icon}</div>
           <div class="room-details">
             <div class="room-name">${escapeHtml(room.name)}</div>
-            <div class="room-users">${room.users} users • ${room.messages
-      } messages</div>
+            <div class="room-users">${room.users} users • ${room.messages} messages</div>
           </div>
         </div>
         <div class="room-actions">
@@ -321,212 +323,6 @@ if (!document.getElementById('spinner-style')) {
   document.head.appendChild(style);
 }
 
-// --- Patch onload to use loadSession and modularized socket handler ---
-const originalOnload = onload;
-onload = function() {
-  // ...existing code...
-  loadSession();
-  initializeSocket();
-  // ...existing code...
-};
-
-// --- Patch initializeSocket to use modular handler ---
-const originalInitializeSocket = initializeSocket;
-initializeSocket = function() {
-  try {
-    socket = io(window.location.origin);
-    socket.on("connect", () => {
-      console.log("Connected to server");
-      showFeedbackMessage("Connected to server", true);
-    });
-    socket.on("connect_error", (error) => {
-      console.error("Connection error:", error);
-      showFeedbackMessage("Connection error: " + error.message);
-    });
-    socket.on("disconnect", (reason) => {
-      console.log("Disconnected:", reason);
-      showFeedbackMessage("Disconnected from server: " + reason);
-      if (chatRoom) {
-        chatRoom.innerHTML = "Chatroom: <span class='disconnected'>Disconnected</span>";
-      }
-      if (totalUsers) {
-        totalUsers.textContent = "Users Online: 0";
-      }
-      setTimeout(() => {
-        if (!socket.connected) {
-          socket.connect();
-        }
-      }, 5000);
-    });
-    socket.on("username_taken", (username) => {
-      console.log("Username taken:", username);
-      showFeedbackMessage(`Username \"${username}\" is already taken in this room`);
-    });
-    socket.on("join", handleJoinConfirmation);
-  } catch (error) {
-    console.error("Error initializing socket:", error);
-    showFeedbackMessage("Failed to initialize connection: " + error.message);
-  }
-};
-
-
-// Sidebar Functions
-function toggleSidebar() {
-  const sidebar = document.getElementById("sidebar");
-  const overlay = document.getElementById("sidebarOverlay");
-  const hamburger = document.getElementById("hamburgerBtn");
-
-  if (sidebar) sidebar.classList.toggle("active");
-  if (overlay) overlay.classList.toggle("active");
-  if (hamburger) hamburger.classList.toggle("active");
-}
-
-function closeSidebar() {
-  const sidebar = document.getElementById("sidebar");
-  const overlay = document.getElementById("sidebarOverlay");
-  const hamburger = document.getElementById("hamburgerBtn");
-
-  if (sidebar) sidebar.classList.remove("active");
-  if (overlay) overlay.classList.remove("active");
-  if (hamburger) hamburger.classList.remove("active");
-}
-
-// Room Management Functions
-function loadSavedRooms() {
-  // Initialize with some default rooms if none exist
-  if (savedRooms.length === 0) {
-    savedRooms = [
-      { name: "General", users: 0, messages: 0, icon: "💬" },
-      { name: "Tech Talk", users: 0, messages: 0, icon: "💻" },
-      { name: "Random", users: 0, messages: 0, icon: "🎲" },
-      { name: "Gaming", users: 0, messages: 0, icon: "🎮" },
-      { name: "Music", users: 0, messages: 0, icon: "🎵" },
-    ];
-  }
-}
-
-function populateRoomList() {
-  const roomList = document.getElementById("roomList");
-  if (!roomList) return;
-
-  roomList.innerHTML = "";
-
-  savedRooms.forEach((room, index) => {
-    const roomItem = document.createElement("li");
-    roomItem.className = "room-item";
-
-    // Highlight the current room
-    if (currentRoom === room.name) {
-      roomItem.classList.add("active");
-      console.log("Highlighting active room:", room.name);
-    }
-
-    // Create room item HTML
-    roomItem.innerHTML = `
-      <div class="room-link" onclick="joinRoom('${escapeHtml(room.name)}')">
-        <div class="room-info">
-          <div class="room-icon">${room.icon}</div>
-          <div class="room-details">
-            <div class="room-name">${escapeHtml(room.name)}</div>
-            <div class="room-users">${room.users} users • ${room.messages
-      } messages</div>
-          </div>
-        </div>
-        <div class="room-actions">
-          <button class="room-action" onclick="event.stopPropagation(); deleteRoom(${index})" title="Delete room">
-            <i class="fa-solid fa-trash"></i>
-          </button>
-        </div>
-      </div>
-    `;
-
-    roomList.appendChild(roomItem);
-  });
-
-  // Log the current room for debugging
-  if (currentRoom) {
-    console.log("Current room in populateRoomList:", currentRoom);
-  }
-}
-
-function joinRoom(roomName) {
-  if (joinRoomInProgress) return;
-  if (!socket || !roomName) {
-    console.error("Cannot join room: socket or room name is missing");
-    return;
-  }
-  if (!socket.connected) {
-    console.error("Cannot join room: socket is not connected");
-    showFeedbackMessage("Cannot join room: not connected to server");
-    return;
-  }
-  if (joinRoomTimeout) clearTimeout(joinRoomTimeout);
-  joinRoomInProgress = true;
-  try {
-    // Check if already in the same room
-    if (currentRoom === roomName) {
-      console.log("Already in room:", roomName);
-
-      // Show more prominent feedback for already being in room
-      showFeedbackMessage(`You are already connected to "${roomName}"`, true);
-
-      // Highlight the current room in the sidebar
-      populateRoomList();
-
-      // Update the room display to confirm current connection
-      if (chatRoom) {
-        chatRoom.innerHTML = `Chatroom: <span class='connected'>${escapeHtml(roomName)}</span>`;
-      }
-
-      // Flash the room title to draw attention
-      if (chatRoom) {
-        chatRoom.classList.add('flash-highlight');
-        setTimeout(() => {
-          chatRoom.classList.remove('flash-highlight');
-        }, 2000);
-      }
-
-      // Close sidebar after showing feedback
-      setTimeout(() => {
-        closeSidebar();
-      }, 1500);
-
-      // Focus on message input to indicate ready state
-      if (messageInput) {
-        messageInput.focus();
-      }
-
-      joinRoomInProgress = false;
-      return;
-    }
-
-    // Leave current room if any
-    if (currentRoom) {
-      console.log("Leaving current room:", currentRoom);
-      socket.emit("leave", { room: currentRoom, username: currentUsername });
-    }
-
-    currentUsername = usernameInput.value || "Anonymous";
-    // Show loading spinner
-    if (chatRoom) {
-      chatRoom.innerHTML = `<span class='spinner'></span> <span class='connecting'>Joining ${escapeHtml(roomName)}...</span>`;
-    }
-    socket.emit("join", {
-      room: roomName,
-      username: currentUsername,
-      broadcast: true
-    });
-    closeSidebar();
-    closeAddRoomModal();
-    if (messageInput) messageInput.focus();
-    joinRoomTimeout = setTimeout(() => { joinRoomInProgress = false; }, 1000);
-  } catch (error) {
-    joinRoomInProgress = false;
-    console.error("Error joining room:", error);
-    showFeedbackMessage("Failed to join room: " + error.message);
-  }
-}
-
 function showAddRoomModal() {
   const modal = document.getElementById("addRoomModal");
   const input = document.getElementById("newRoomName");
@@ -639,6 +435,7 @@ function saveSession(username, room) {
   if (username) sessionStorage.setItem('currentUsername', username);
   if (room) sessionStorage.setItem('currentRoom', room);
 }
+
 function loadSession() {
   const savedUsername = sessionStorage.getItem('currentUsername');
   const savedRoom = sessionStorage.getItem('currentRoom');
@@ -853,8 +650,6 @@ document.querySelectorAll('.messageText').forEach(msg => {
     if (li) li.style.display = 'none';
   }
 });
-
-
 
 // Function to show feedback message in the feedback element
 function showFeedbackMessage(message, isPersistent) {
