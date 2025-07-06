@@ -848,7 +848,7 @@ function loadUsernameFromSession() {
 // Socket.io Connection
 function initializeSocket() {
   try {
-    socket = io();
+    socket = io(window.location.origin);
 
     socket.on("connect", () => {
       console.log("Connected to server");
