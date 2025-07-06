@@ -30,6 +30,25 @@ const anonymousCount = {}; // room name -> current anonymous count
 io.on('connection', (socket) => {
   console.log("New user connected:", socket.id);
 
+  // Add new handler for username_update event
+  socket.on("restore_username", (data) => {
+    if (data.username) {
+      // Validate the username isn't taken in current room
+      const room = rooms[socket.id];
+      if (room && roomUsernames[room] && roomUsernames[room].has(data.username)) {
+        socket.emit("username_taken", data.username);
+        return;
+      }
+      
+      // Update username in server state
+      usernames[socket.id] = data.username;
+      
+      // Confirm username update to client
+      socket.emit("username_updated", { username: data.username });
+      
+      console.log(`Username restored for ${socket.id}: ${data.username}`);
+    }
+
   // Function to update user count in a room
   function updateUserCount(room) {
     if (room) {
