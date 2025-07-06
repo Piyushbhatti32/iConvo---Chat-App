@@ -59,6 +59,26 @@ function onload() {
 
   console.log("Chat application loaded");
 
+  // Add title click handler
+  const titleElement = document.querySelector('.Title');
+  if (titleElement) {
+    titleElement.addEventListener('click', function(e) {
+      e.preventDefault();
+      console.log('Title clicked - refreshing page');
+      
+      // Clear any current room and session
+      if (socket && socket.connected && currentRoom) {
+        socket.emit("leave", { room: currentRoom, username: currentUsername });
+      }
+      
+      // Clear session storage
+      clearRoomSession();
+      
+      // Refresh the page
+      window.location.reload();
+    });
+  }
+
   // Add event listeners
   if (messageForm) {
     messageForm.addEventListener("submit", function(e) {
