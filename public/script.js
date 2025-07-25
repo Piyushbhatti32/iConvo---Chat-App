@@ -138,7 +138,7 @@ function onload() {
         sendMessage();
       } else if (event.target === usernameInput) {
         event.preventDefault();
-        Connect();
+        handleUsernameChange();
       } else if (event.target === document.getElementById("newRoomName")) {
         event.preventDefault();
         createNewRoom();
@@ -149,6 +149,37 @@ function onload() {
       closeAddRoomModal();
     }
   });
+
+  // Add username change listeners
+  if (usernameInput) {
+    // Handle username changes when user stops typing (debounced)
+    let usernameChangeTimeout;
+    usernameInput.addEventListener('input', function() {
+      clearTimeout(usernameChangeTimeout);
+      usernameChangeTimeout = setTimeout(() => {
+        const newUsername = usernameInput.value.trim();
+        if (newUsername && newUsername !== currentUsername && currentRoom) {
+          handleUsernameChange();
+        }
+      }, 1000); // Wait 1 second after user stops typing
+    });
+
+    // Handle immediate username change on blur (when user clicks away)
+    usernameInput.addEventListener('blur', function() {
+      clearTimeout(usernameChangeTimeout);
+      const newUsername = usernameInput.value.trim();
+      if (newUsername && newUsername !== currentUsername && currentRoom) {
+        handleUsernameChange();
+      }
+    });
+
+    // Add visual feedback when user is typing in username field
+    usernameInput.addEventListener('focus', function() {
+      if (currentRoom) {
+        showFeedbackMessage('💡 Tip: Press Enter or click away to change your username', false);
+      }
+    });
+  }
 
   // Initialize typing indicator
   initializeTypingIndicator();
@@ -507,6 +538,59 @@ function loadSession() {
   }
 }
 
+// Handle username change functionality
+function handleUsernameChange() {
+  if (!currentRoom || !socket || !socket.connected) {
+    showFeedbackMessage("Please join a room first before changing your username");
+    return;
+  }
+
+  const newUsername = usernameInput.value.trim();
+  
+  // Validate the new username
+  if (!newUsername) {
+    showFeedbackMessage("Username cannot be empty");
+    usernameInput.value = currentUsername; // Reset to current username
+    return;
+  }
+
+  if (newUsername.length > 50) {
+    showFeedbackMessage("Username is too long (maximum 50 characters)");
+    usernameInput.value = currentUsername; // Reset to current username
+    return;
+  }
+
+  if (newUsername === currentUsername) {
+    // No change needed
+    return;
+  }
+
+  // Show loading state
+  showFeedbackMessage(`🔄 Changing username to "${escapeHtml(newUsername)}"...`);
+  
+  // Store the old username for potential rollback
+  const oldUsername = currentUsername;
+  
+  try {
+    // Attempt to rejoin the room with the new username
+    socket.emit("leave", { room: currentRoom, username: oldUsername });
+    
+    // Small delay to ensure leave is processed first
+    setTimeout(() => {
+      socket.emit("join", {
+        room: currentRoom,
+        username: newUsername,
+        broadcast: true
+      });
+    }, 100);
+    
+  } catch (error) {
+    console.error("Error changing username:", error);
+    showFeedbackMessage("Failed to change username. Please try again.");
+    usernameInput.value = oldUsername; // Reset to old username
+  }
+}
+
 // Connect function - now simply calls joinRoom
 function Connect() {
   var username = usernameInput ? usernameInput.value.trim() : "";
@@ -650,7 +734,7 @@ function sendMessage() {
   }
 }
 
-function addMessage(username, message, side) {
+function addMessage(username, message, side, messageId = null) {
   if (!messageContainer) return;
 
   // Extract actual message content for user messages
@@ -703,20 +787,55 @@ function addMessage(username, message, side) {
   // Create message element
   const messageElement = document.createElement("li");
   messageElement.className = "message" + (side === "left" ? "Left" : "Right");
+  if (messageId) {
+    messageElement.dataset.messageId = messageId;
+  }
 
   // Get current time in user's timezone
   const timeString = moment().format("hh:mm A");
+  const dateKey = moment().format("YYYY-MM-DD");
+  
+  // Check if we need to add a date separator
+  const shouldAddDateSeparator = checkAndAddDateSeparator(dateKey);
 
-  // Create message content
+  // Create message content with reactions
+  const reactionsHTML = messageId ? `
+    <div class="message-reactions" data-message-id="${messageId}">
+      <button class="reaction-btn" data-emoji="👍" title="Like">
+        <span class="emoji">👍</span>
+        <span class="count">0</span>
+      </button>
+      <button class="reaction-btn" data-emoji="❤️" title="Love">
+        <span class="emoji">❤️</span>
+        <span class="count">0</span>
+      </button>
+      <button class="reaction-btn" data-emoji="😂" title="Laugh">
+        <span class="emoji">😂</span>
+        <span class="count">0</span>
+      </button>
+      <button class="reaction-btn" data-emoji="😮" title="Wow">
+        <span class="emoji">😮</span>
+        <span class="count">0</span>
+      </button>
+      <button class="add-reaction-btn" title="Add reaction">+</button>
+    </div>
+  ` : '';
+
   messageElement.innerHTML = `
         <p class="messageText">
             ${escapeHtml(displayMessage)}
             <span>${escapeHtml(displayUsername)} ● ${timeString}</span>
         </p>
+        ${reactionsHTML}
     `;
 
   // Add message to container
   messageContainer.appendChild(messageElement);
+  
+  // Add reaction event listeners
+  if (messageId) {
+    addReactionEventListeners(messageElement, messageId);
+  }
 
   // Auto-scroll to bottom
   messageContainer.scrollTop = messageContainer.scrollHeight;
@@ -989,7 +1108,18 @@ function initializeSocket() {
     // Handle username taken error
     socket.on("username_taken", (username) => {
       console.log("Username taken:", username);
-      showFeedbackMessage(`Username \"${username}\" is already taken in this room`);
+      showFeedbackMessage(`❌ Username "${username}" is already taken in this room. Please choose another name.`);
+      
+      // Reset the username input to the current username
+      if (usernameInput && currentUsername) {
+        usernameInput.value = currentUsername;
+      }
+      
+      // Focus on the username input for easy correction
+      if (usernameInput) {
+        usernameInput.focus();
+        usernameInput.select(); // Select all text for easy replacement
+      }
     });
 
     // Handle join confirmation from server
@@ -1308,3 +1438,232 @@ function updateTotalUsers(count) {
           socket.emit('get_user_count', { room: currentRoom });
       }
   }, 30000);
+
+// Message Reactions Functionality
+let lastDateDisplayed = null;
+
+function checkAndAddDateSeparator(dateKey) {
+  if (lastDateDisplayed !== dateKey) {
+    const separator = document.createElement('div');
+    separator.className = 'date-separator';
+    separator.innerHTML = `<span>${moment(dateKey).format('MMMM D, YYYY')}</span>`;
+    
+    messageContainer.appendChild(separator);
+    lastDateDisplayed = dateKey;
+    return true;
+  }
+  return false;
+}
+
+function addReactionEventListeners(messageElement, messageId) {
+  const reactionButtons = messageElement.querySelectorAll('.reaction-btn');
+  const addReactionBtn = messageElement.querySelector('.add-reaction-btn');
+  
+  // Add click handlers for existing reaction buttons
+  reactionButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const emoji = btn.dataset.emoji;
+      toggleReaction(messageId, emoji, btn);
+    });
+  });
+  
+  // Add click handler for add reaction button
+  if (addReactionBtn) {
+    addReactionBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      showEmojiPickerForReaction(messageId, messageElement);
+    });
+  }
+}
+
+function toggleReaction(messageId, emoji, buttonElement) {
+  if (!socket || !socket.connected || !currentRoom || !currentUsername) {
+    return;
+  }
+  
+  const countSpan = buttonElement.querySelector('.count');
+  const currentCount = parseInt(countSpan.textContent) || 0;
+  const isActive = buttonElement.classList.contains('active');
+  
+  // Emit reaction to server
+  socket.emit('toggle_reaction', {
+    messageId: messageId,
+    emoji: emoji,
+    username: currentUsername,
+    room: currentRoom,
+    action: isActive ? 'remove' : 'add'
+  });
+  
+  // Update UI immediately for better UX
+  if (isActive) {
+    buttonElement.classList.remove('active');
+    countSpan.textContent = Math.max(0, currentCount - 1);
+  } else {
+    buttonElement.classList.add('active');
+    countSpan.textContent = currentCount + 1;
+  }
+  
+  // Hide button if count becomes 0
+  if (parseInt(countSpan.textContent) === 0) {
+    buttonElement.style.display = 'none';
+  } else {
+    buttonElement.style.display = 'inline-flex';
+  }
+}
+
+function showEmojiPickerForReaction(messageId, messageElement) {
+  // Create a simple emoji selector for reactions
+  const existingPicker = document.querySelector('.reaction-emoji-picker');
+  if (existingPicker) {
+    existingPicker.remove();
+  }
+  
+  const picker = document.createElement('div');
+  picker.className = 'reaction-emoji-picker';
+  picker.style.cssText = `
+    position: absolute;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    z-index: 1000;
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
+    max-width: 200px;
+  `;
+  
+  const commonEmojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🎉', '👏', '🔥', '💯', '🤔', '😍'];
+  
+  commonEmojis.forEach(emoji => {
+    const btn = document.createElement('button');
+    btn.textContent = emoji;
+    btn.style.cssText = `
+      border: none;
+      background: none;
+      font-size: 20px;
+      padding: 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    `;
+    btn.addEventListener('mouseover', () => btn.style.backgroundColor = '#f0f0f0');
+    btn.addEventListener('mouseout', () => btn.style.backgroundColor = 'transparent');
+    btn.addEventListener('click', () => {
+      addCustomReaction(messageId, emoji, messageElement);
+      picker.remove();
+    });
+    picker.appendChild(btn);
+  });
+  
+  // Position the picker
+  const rect = messageElement.getBoundingClientRect();
+  picker.style.top = (rect.bottom + window.scrollY) + 'px';
+  picker.style.left = rect.left + 'px';
+  
+  document.body.appendChild(picker);
+  
+  // Close picker when clicking outside
+  setTimeout(() => {
+    document.addEventListener('click', function closePickerHandler(e) {
+      if (!picker.contains(e.target)) {
+        picker.remove();
+        document.removeEventListener('click', closePickerHandler);
+      }
+    });
+  }, 100);
+}
+
+function addCustomReaction(messageId, emoji, messageElement) {
+  const reactionsContainer = messageElement.querySelector('.message-reactions');
+  if (!reactionsContainer) return;
+  
+  // Check if this emoji already exists
+  let existingBtn = reactionsContainer.querySelector(`[data-emoji="${emoji}"]`);
+  
+  if (existingBtn) {
+    // If it exists, toggle it
+    toggleReaction(messageId, emoji, existingBtn);
+  } else {
+    // Create new reaction button
+    const newBtn = document.createElement('button');
+    newBtn.className = 'reaction-btn active';
+    newBtn.dataset.emoji = emoji;
+    newBtn.title = emoji;
+    newBtn.innerHTML = `
+      <span class="emoji">${emoji}</span>
+      <span class="count">1</span>
+    `;
+    
+    // Add event listener
+    newBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleReaction(messageId, emoji, newBtn);
+    });
+    
+    // Insert before the add button
+    const addBtn = reactionsContainer.querySelector('.add-reaction-btn');
+    reactionsContainer.insertBefore(newBtn, addBtn);
+    
+    // Emit to server
+    if (socket && socket.connected) {
+      socket.emit('toggle_reaction', {
+        messageId: messageId,
+        emoji: emoji,
+        username: currentUsername,
+        room: currentRoom,
+        action: 'add'
+      });
+    }
+  }
+}
+
+// Handle reaction updates from server
+function handleReactionUpdate(data) {
+  const messageElement = document.querySelector(`[data-message-id="${data.messageId}"]`);
+  if (!messageElement) return;
+  
+  const reactionsContainer = messageElement.querySelector('.message-reactions');
+  if (!reactionsContainer) return;
+  
+  let reactionBtn = reactionsContainer.querySelector(`[data-emoji="${data.emoji}"]`);
+  
+  if (data.count > 0) {
+    if (!reactionBtn) {
+      // Create new reaction button
+      reactionBtn = document.createElement('button');
+      reactionBtn.className = 'reaction-btn';
+      reactionBtn.dataset.emoji = data.emoji;
+      reactionBtn.title = data.emoji;
+      reactionBtn.innerHTML = `
+        <span class="emoji">${data.emoji}</span>
+        <span class="count">${data.count}</span>
+      `;
+      
+      reactionBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleReaction(data.messageId, data.emoji, reactionBtn);
+      });
+      
+      const addBtn = reactionsContainer.querySelector('.add-reaction-btn');
+      reactionsContainer.insertBefore(reactionBtn, addBtn);
+    } else {
+      // Update existing button
+      const countSpan = reactionBtn.querySelector('.count');
+      countSpan.textContent = data.count;
+    }
+    
+    // Show the button and mark as active if current user reacted
+    reactionBtn.style.display = 'inline-flex';
+    if (data.users && data.users.includes(currentUsername)) {
+      reactionBtn.classList.add('active');
+    } else {
+      reactionBtn.classList.remove('active');
+    }
+  } else if (reactionBtn) {
+    // Remove reaction button if count is 0
+    reactionBtn.remove();
+  }
+}

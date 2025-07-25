@@ -3,14 +3,129 @@ const express = require("express");
 const socketio = require("socket.io");
 const path = require("path");
 const os = require('os');
+const moment = require('moment-timezone');
+const config = require('./config');
+
+// Logging utility
+const log = {
+  info: (msg, ...args) => console.log(`[INFO] ${moment().format('YYYY-MM-DD HH:mm:ss')} - ${msg}`, ...args),
+  warn: (msg, ...args) => console.warn(`[WARN] ${moment().format('YYYY-MM-DD HH:mm:ss')} - ${msg}`, ...args),
+  error: (msg, ...args) => console.error(`[ERROR] ${moment().format('YYYY-MM-DD HH:mm:ss')} - ${msg}`, ...args),
+  debug: (msg, ...args) => config.logLevel === 'debug' && console.log(`[DEBUG] ${moment().format('YYYY-MM-DD HH:mm:ss')} - ${msg}`, ...args)
+};
 
 const app = express();
 const server = http.createServer(app);
 const io = socketio(server, {
   cors: {
-    origin: "*",
+    origin: config.corsOrigin,
     methods: ["GET", "POST"]
   }
+});
+
+// Rate limiting and security
+const connectionLimits = new Map(); // IP -> { count, resetTime }
+const messageLimits = new Map(); // socket.id -> { count, resetTime }
+const joinLimits = new Map(); // socket.id -> { count, resetTime }
+
+// Middleware for JSON parsing and security headers
+app.use(express.json({ limit: '10mb' }));
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
+// Statistics tracking
+const stats = {
+  startTime: Date.now(),
+  totalConnections: 0,
+  currentConnections: 0,
+  totalMessages: 0,
+  totalRooms: 0,
+  peakConnections: 0,
+  messagesPerMinute: 0,
+  activeRooms: () => Object.keys(roomUsers).length,
+  uptime: () => Date.now() - stats.startTime
+};
+
+// Message history storage
+const messageHistory = {}; // room -> array of messages
+
+// Utility functions
+function sanitizeMessage(message) {
+  if (typeof message !== 'string') return '';
+  return message
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;')
+    .trim();
+}
+
+function isRateLimited(limits, key, maxCount, windowMs) {
+  const now = Date.now();
+  const limit = limits.get(key);
+  
+  if (!limit) {
+    limits.set(key, { count: 1, resetTime: now + windowMs });
+    return false;
+  }
+  
+  if (now > limit.resetTime) {
+    limits.set(key, { count: 1, resetTime: now + windowMs });
+    return false;
+  }
+  
+  if (limit.count >= maxCount) {
+    return true;
+  }
+  
+  limit.count++;
+  return false;
+}
+
+function validateInput(input, maxLength, allowEmpty = false) {
+  if (!allowEmpty && (!input || !input.trim())) return false;
+  if (input.length > maxLength) return false;
+  return true;
+}
+
+// Health check endpoint
+app.get(config.healthCheckPath, (req, res) => {
+  const healthData = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: stats.uptime(),
+    connections: stats.currentConnections,
+    rooms: stats.activeRooms(),
+    memory: process.memoryUsage(),
+    version: require('./package.json').version || '1.0.0'
+  };
+  res.json(healthData);
+});
+
+// Statistics endpoint
+app.get(config.statsPath, (req, res) => {
+  const detailedStats = {
+    ...stats,
+    activeRooms: stats.activeRooms(),
+    uptime: stats.uptime(),
+    roomList: Object.keys(roomUsers).map(room => ({
+      name: room,
+      users: roomUsers[room] ? roomUsers[room].size : 0,
+      messages: messageHistory[room] ? messageHistory[room].length : 0
+    })),
+    systemInfo: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      architecture: process.arch,
+      memory: process.memoryUsage()
+    }
+  };
+  res.json(detailedStats);
 });
 
 // Serve static files from current directory (or 'public' if you have one)
@@ -28,7 +143,25 @@ const roomUsernames = {}; // room name -> Set of usernames
 const anonymousCount = {}; // room name -> current anonymous count
 
 io.on('connection', (socket) => {
-  console.log("New user connected:", socket.id);
+  const clientIP = socket.handshake.address;
+  log.info(`New user connected: ${socket.id} from ${clientIP}`);
+  
+  // Update statistics
+  stats.totalConnections++;
+  stats.currentConnections++;
+  stats.peakConnections = Math.max(stats.peakConnections, stats.currentConnections);
+  
+  // Check connection limits per IP
+  if (isRateLimited(connectionLimits, clientIP, config.maxConnectionsPerIP, 3600000)) { // 1 hour window
+    log.warn(`Connection rate limit exceeded for IP: ${clientIP}`);
+    socket.emit('connection_error', 'Too many connections from this IP address');
+    socket.disconnect();
+    return;
+  }
+  
+  // Initialize client-specific rate limiting
+  messageLimits.set(socket.id, { count: 0, resetTime: Date.now() + config.rateLimitWindow });
+  joinLimits.set(socket.id, { count: 0, resetTime: Date.now() + config.rateLimitWindow });
 
   // Add new handler for username_update event
   socket.on("restore_username", (data) => {
@@ -111,6 +244,7 @@ io.on('connection', (socket) => {
         }
       } else if (roomUsernames[room].has(username)) {
         // For non-anonymous users, reject the connection
+        log.warn(`Username collision: ${username} already exists in room ${room}`);
         socket.emit("username_taken", username);
         return;
       }
@@ -214,23 +348,63 @@ io.on('connection', (socket) => {
 
     // Extract room and message from data
     const room = typeof data === 'object' ? data.room : data;
-    const message = typeof data === 'object' ? data.message : arguments[1];
+    let message = typeof data === 'object' ? data.message : arguments[1];
+
+    // Rate limiting for messages
+    if (isRateLimited(messageLimits, socket.id, config.maxMessagesPerWindow, config.rateLimitWindow)) {
+      log.warn(`Message rate limit exceeded for user: ${username} (${socket.id})`);
+      socket.emit("message_error", "You are sending messages too quickly. Please slow down.");
+      return;
+    }
 
     // Verify user is in the room they're trying to send to
     if (userRoom === room && username) {
-      // Validate message is not empty
-      if (!message || !message.trim()) {
-        socket.emit("message_error", "Empty messages are not allowed");
+      // Validate message input
+      if (!validateInput(message, config.maxMessageLength)) {
+        socket.emit("message_error", "Message is empty or too long");
         return;
       }
 
+      // Sanitize message content
+      message = sanitizeMessage(message);
+      
+      // Check for spam protection (basic duplicate message detection)
+      if (config.enableSpamProtection) {
+        const roomHistory = messageHistory[room] || [];
+        const recentMessages = roomHistory.slice(-5); // Check last 5 messages
+        const duplicateCount = recentMessages.filter(msg => 
+          msg.username === username && msg.message === message
+        ).length;
+        
+        if (duplicateCount >= 2) {
+          socket.emit("message_error", "Please avoid sending duplicate messages");
+          return;
+        }
+      }
+
       const formattedMessage = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         username: username,
         message: message,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        room: room
       };
 
-      console.log(`Message from ${username} in ${room}: ${message}`);
+      // Store message in history
+      if (!messageHistory[room]) {
+        messageHistory[room] = [];
+      }
+      messageHistory[room].push(formattedMessage);
+      
+      // Keep only recent messages in memory
+      if (messageHistory[room].length > config.maxMessageHistory) {
+        messageHistory[room] = messageHistory[room].slice(-config.maxMessageHistory);
+      }
+
+      // Update statistics
+      stats.totalMessages++;
+      
+      log.debug(`Message from ${username} in ${room}: ${message}`);
 
       // Send to everyone in the room including sender
       io.to(room).emit("receive", formattedMessage);
@@ -238,7 +412,7 @@ io.on('connection', (socket) => {
       // Send confirmation back to sender
       socket.emit("message_sent", formattedMessage);
     } else {
-      console.log(`Invalid message attempt from ${socket.id} - not in room ${room}`);
+      log.warn(`Invalid message attempt from ${socket.id} - not in room ${room}`);
       socket.emit("message_error", "You must be in a room to send messages");
     }
   });
@@ -322,8 +496,15 @@ io.on('connection', (socket) => {
       const room = rooms[socket.id];
       const username = usernames[socket.id];
 
+      // Update statistics
+      stats.currentConnections = Math.max(0, stats.currentConnections - 1);
+      
+      // Clean up rate limiting maps
+      messageLimits.delete(socket.id);
+      joinLimits.delete(socket.id);
+
       if (room) {
-        console.log(`User ${username} disconnecting from room ${room}`);
+        log.info(`User ${username} disconnecting from room ${room}`);
 
         // Notify room before removing user
         if (username) {
@@ -361,9 +542,9 @@ io.on('connection', (socket) => {
       delete rooms[socket.id];
       delete usernames[socket.id];
 
-      console.log(`User disconnected: ${socket.id}${username ? ` (${username})` : ''}`);
+      log.info(`User disconnected: ${socket.id}${username ? ` (${username})` : ''}`);
     } catch (error) {
-      console.error('Error handling disconnect:', error);
+      log.error('Error handling disconnect:', error);
     }
   });
 
@@ -406,4 +587,84 @@ server.listen(PORT, '0.0.0.0', () => {
 
   console.log(`\nStatic files served from: ${staticDir}`);
   console.log('\nTo access from other devices on the network, use any of the Network URLs listed above.');
+  
+  log.info('Server started successfully');
+  log.info(`Configuration: ${JSON.stringify({ 
+    port: config.port, 
+    maxConnections: config.maxConnectionsPerIP,
+    maxMessageLength: config.maxMessageLength,
+    rateLimitWindow: config.rateLimitWindow,
+    enableSpamProtection: config.enableSpamProtection
+  })}`);
+});
+
+// Periodic cleanup tasks
+setInterval(() => {
+  const now = Date.now();
+  
+  // Clean up expired rate limits
+  for (const [key, limit] of connectionLimits.entries()) {
+    if (now > limit.resetTime) {
+      connectionLimits.delete(key);
+    }
+  }
+  
+  for (const [key, limit] of messageLimits.entries()) {
+    if (now > limit.resetTime) {
+      messageLimits.delete(key);
+    }
+  }
+  
+  for (const [key, limit] of joinLimits.entries()) {
+    if (now > limit.resetTime) {
+      joinLimits.delete(key);
+    }
+  }
+  
+  // Log statistics periodically
+  if (config.logLevel === 'debug') {
+    log.debug(`Active connections: ${stats.currentConnections}, Rate limit maps: connection(${connectionLimits.size}), message(${messageLimits.size}), join(${joinLimits.size})`);
+  }
+}, 300000); // Every 5 minutes
+
+// Calculate messages per minute
+setInterval(() => {
+  const oneMinuteAgo = Date.now() - 60000;
+  let recentMessages = 0;
+  
+  Object.values(messageHistory).forEach(history => {
+    recentMessages += history.filter(msg => 
+      new Date(msg.timestamp).getTime() > oneMinuteAgo
+    ).length;
+  });
+  
+  stats.messagesPerMinute = recentMessages;
+}, 60000); // Every minute
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  log.info('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    log.info('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  log.info('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    log.info('Server closed');
+    process.exit(0);
+  });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
 });
