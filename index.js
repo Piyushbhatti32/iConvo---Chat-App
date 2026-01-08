@@ -144,7 +144,15 @@ const anonymousCount = {}; // room name -> current anonymous count
 
 io.on('connection', (socket) => {
   const clientIP = socket.handshake.address;
-  log.info(`New user connected: ${socket.id} from ${clientIP}`);
+  const auth = socket.handshake.auth || {}; // Get auth data from socket.io client
+  
+  // Extract iTaskOrg auth data
+  const userId = auth.userId || null;
+  const groupId = auth.groupId || null;
+  const userName = auth.userName || null;
+  const token = auth.token || null; // Firebase token (can be verified if needed)
+  
+  log.info(`New user connected: ${socket.id} from ${clientIP}${userId ? ` (userId: ${userId}, groupId: ${groupId})` : ''}`);
   
   // Update statistics
   stats.totalConnections++;
@@ -162,6 +170,13 @@ io.on('connection', (socket) => {
   // Initialize client-specific rate limiting
   messageLimits.set(socket.id, { count: 0, resetTime: Date.now() + config.rateLimitWindow });
   joinLimits.set(socket.id, { count: 0, resetTime: Date.now() + config.rateLimitWindow });
+  
+  // Store iTaskOrg user info if available
+  if (userId) {
+    socket.userId = userId;
+    socket.userName = userName;
+    socket.groupId = groupId;
+  }
 
   // Add new handler for username_update event
   socket.on("restore_username", (data) => {
@@ -417,12 +432,45 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle typing indicators
-  socket.on('typing', (room, username) => {
+  // Handle typing indicators (combined handler for both formats)
+  socket.on('typing', (data, usernameArg) => {
+    let room, userName, isTyping, groupId, userId;
+    
+    // Check if it's iTaskOrg format (object) or legacy format (string, string)
+    if (typeof data === 'object' && data !== null && data.roomId) {
+      // iTaskOrg format
+      room = data.roomId || data.room;
+      userName = data.userName || socket.userName || usernames[socket.id];
+      isTyping = data.isTyping !== false;
+      groupId = data.groupId || socket.groupId;
+      userId = data.userId || socket.userId;
+    } else {
+      // Legacy format: typing(room, username)
+      room = data;
+      userName = usernameArg || usernames[socket.id];
+      isTyping = true; // Legacy format always means typing
+      groupId = socket.groupId;
+      userId = socket.userId;
+    }
+    
     const userRoom = rooms[socket.id];
-    if (userRoom === room && usernames[socket.id] === username) {
-      // Broadcast to everyone in the room except the sender
-      socket.to(room).emit('typing', room, username);
+    if (userRoom === room && userName) {
+      // Emit iTaskOrg format if groupId exists
+      if (groupId) {
+        socket.to(room).emit('typing', {
+          groupId: groupId,
+          userId: userId,
+          userName: userName,
+          isTyping: isTyping
+        });
+      }
+      
+      // Also emit legacy format for backward compatibility
+      if (isTyping) {
+        socket.to(room).emit('typing', room, userName);
+      } else {
+        socket.to(room).emit('stop typing', room, userName);
+      }
     }
   });
 
@@ -431,6 +479,18 @@ io.on('connection', (socket) => {
     if (userRoom === room && usernames[socket.id] === username) {
       // Broadcast to everyone in the room except the sender
       socket.to(room).emit('stop typing', room, username);
+      
+      // Also emit iTaskOrg format if applicable
+      const groupId = socket.groupId;
+      const userId = socket.userId;
+      if (groupId) {
+        socket.to(room).emit('typing', {
+          groupId: groupId,
+          userId: userId,
+          userName: username,
+          isTyping: false
+        });
+      }
     }
   });
 
@@ -446,7 +506,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle user count requests
+  // Handle user count requests (legacy iConvo)
   socket.on('get_user_count', (data) => {
     const room = data.room;
     if (room && roomUsers[room]) {
@@ -459,6 +519,289 @@ io.on('connection', (socket) => {
         active: activeUsers,
         room: room
       });
+    }
+  });
+
+  // ========== iTaskOrg Event Handlers ==========
+  
+  // iTaskOrg: Join room (group chat)
+  socket.on('join_room', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    const userId = data.userId || socket.userId || socket.id;
+    const userName = data.userName || socket.userName || 'Unknown';
+    
+    if (!roomId) {
+      socket.emit('join_error', 'Room ID is required');
+      return;
+    }
+    
+    log.info(`iTaskOrg: User ${userName} (${userId}) joining room ${roomId} (groupId: ${groupId})`);
+    
+    // Store user info
+    socket.userId = userId;
+    socket.userName = userName;
+    socket.groupId = groupId;
+    
+    // Use existing join logic but with iTaskOrg format
+    const joinData = {
+      room: roomId,
+      username: userName,
+      broadcast: true
+    };
+    
+    // Call existing join handler logic
+    const room = joinData.room;
+    let username = joinData.username;
+    const broadcast = joinData.broadcast !== false;
+    
+    // Initialize room if needed
+    if (!roomUsernames[room]) {
+      roomUsernames[room] = new Set();
+    }
+    if (!roomUsers[room]) {
+      roomUsers[room] = new Set();
+    }
+    
+    // Leave previous room if any
+    const previousRoom = rooms[socket.id];
+    if (previousRoom && previousRoom !== room) {
+      socket.leave(previousRoom);
+      socket.to(previousRoom).emit('user_left', {
+        groupId: socket.groupId || null,
+        userId: socket.userId,
+        userName: usernames[socket.id] || socket.userName,
+        lastSeen: new Date().toISOString()
+      });
+      
+      if (roomUsers[previousRoom]) {
+        roomUsers[previousRoom].delete(socket.id);
+        if (roomUsers[previousRoom].size === 0) {
+          delete roomUsers[previousRoom];
+        }
+      }
+      updateUserCount(previousRoom);
+    }
+    
+    // Track user info
+    rooms[socket.id] = room;
+    usernames[socket.id] = username;
+    roomUsers[room].add(socket.id);
+    roomUsernames[room].add(username);
+    
+    // Join Socket.IO room
+    socket.join(room);
+    
+    // Emit iTaskOrg-specific events
+    socket.emit('join', { room: room, username: username });
+    
+    // Notify others in room
+    socket.to(room).emit('user_joined', {
+      groupId: groupId,
+      userId: userId,
+      userName: userName
+    });
+    
+    // Also emit legacy event for backward compatibility
+    if (broadcast) {
+      socket.to(room).emit('userJoined', { room: room, username: username });
+    }
+    
+    updateUserCount(room);
+    log.info(`iTaskOrg: User ${userName} successfully joined room ${roomId}`);
+  });
+  
+  // iTaskOrg: Leave room
+  socket.on('leave_room', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    const userId = data.userId || socket.userId;
+    const userName = socket.userName || usernames[socket.id] || 'Unknown';
+    const room = roomId || rooms[socket.id];
+    
+    if (room && rooms[socket.id] === room) {
+      log.info(`iTaskOrg: User ${userName} (${userId}) leaving room ${room}`);
+      
+      socket.leave(room);
+      
+      // Emit iTaskOrg-specific event
+      socket.to(room).emit('user_left', {
+        groupId: groupId,
+        userId: userId,
+        userName: userName,
+        lastSeen: new Date().toISOString()
+      });
+      
+      // Also emit legacy event
+      socket.to(room).emit('receive', `Server: ${userName} left the chat`);
+      
+      // Clean up tracking
+      if (roomUsers[room]) {
+        roomUsers[room].delete(socket.id);
+        if (roomUsers[room].size === 0) {
+          delete roomUsers[room];
+        }
+      }
+      
+      if (roomUsernames[room]) {
+        roomUsernames[room].delete(userName);
+        if (roomUsernames[room].size === 0) {
+          delete roomUsernames[room];
+        }
+      }
+      
+      updateUserCount(room);
+    }
+  });
+  
+  // iTaskOrg: Send message
+  socket.on('send_message', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    const content = data.content || data.message;
+    const userId = data.userId || socket.userId || socket.id;
+    const userName = socket.userName || usernames[socket.id] || 'Unknown';
+    const userRoom = rooms[socket.id];
+    
+    // Rate limiting
+    if (isRateLimited(messageLimits, socket.id, config.maxMessagesPerWindow, config.rateLimitWindow)) {
+      log.warn(`Message rate limit exceeded for user: ${userName} (${socket.id})`);
+      socket.emit('message_error', 'You are sending messages too quickly. Please slow down.');
+      return;
+    }
+    
+    // Validate
+    if (!validateInput(content, config.maxMessageLength)) {
+      socket.emit('message_error', 'Message is empty or too long');
+      return;
+    }
+    
+    // Verify user is in the room
+    if (userRoom === roomId && userName) {
+      const sanitizedMessage = sanitizeMessage(content);
+      
+      const formattedMessage = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        groupId: groupId,
+        content: sanitizedMessage,
+        message: sanitizedMessage, // For backward compatibility
+        senderId: userId,
+        userId: userId, // Alias
+        createdBy: userId, // Alias
+        userName: userName,
+        senderName: userName, // Alias
+        username: userName, // Legacy alias
+        timestamp: data.timestamp || new Date().toISOString(),
+        type: data.type || 'text',
+        replyTo: data.replyTo || null,
+        mentions: data.mentions || [],
+        attachments: data.attachments || [],
+        room: roomId
+      };
+      
+      // Store in history
+      if (!messageHistory[roomId]) {
+        messageHistory[roomId] = [];
+      }
+      messageHistory[roomId].push(formattedMessage);
+      
+      if (messageHistory[roomId].length > config.maxMessageHistory) {
+        messageHistory[roomId] = messageHistory[roomId].slice(-config.maxMessageHistory);
+      }
+      
+      stats.totalMessages++;
+      log.debug(`iTaskOrg message from ${userName} in ${roomId}: ${sanitizedMessage}`);
+      
+      // Emit iTaskOrg-specific event
+      io.to(roomId).emit('message', formattedMessage);
+      
+      // Also emit legacy event for backward compatibility
+      io.to(roomId).emit('receive', {
+        id: formattedMessage.id,
+        username: userName,
+        message: sanitizedMessage,
+        timestamp: formattedMessage.timestamp,
+        room: roomId
+      });
+      
+      socket.emit('message_sent', formattedMessage);
+    } else {
+      log.warn(`Invalid message attempt from ${socket.id} - not in room ${roomId}`);
+      socket.emit('message_error', 'You must be in a room to send messages');
+    }
+  });
+  
+  
+  // iTaskOrg: Get room users (presence)
+  socket.on('get_room_users', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    
+    if (roomId && roomUsers[roomId]) {
+      const socketsInRoom = io.sockets.adapter.rooms.get(roomId);
+      const users = [];
+      
+      if (socketsInRoom) {
+        socketsInRoom.forEach(socketId => {
+          const socketData = io.sockets.sockets.get(socketId);
+          if (socketData) {
+            const userId = socketData.userId || socketId;
+            const userName = socketData.userName || usernames[socketId] || 'Unknown';
+            users.push({
+              userId: userId,
+              userName: userName,
+              lastSeen: new Date().toISOString()
+            });
+          }
+        });
+      }
+      
+      // Emit iTaskOrg format
+      socket.emit('room_users', {
+        groupId: groupId,
+        users: users
+      });
+    }
+  });
+  
+  // iTaskOrg: Mark messages as read
+  socket.on('mark_read', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    const userId = data.userId || socket.userId;
+    const messageId = data.lastReadMessageId || data.messageId;
+    
+    if (roomId && userId && messageId) {
+      // Broadcast read receipt to room
+      socket.to(roomId).emit('message_receipt', {
+        groupId: groupId,
+        messageId: messageId,
+        userId: userId,
+        status: 'read'
+      });
+      
+      log.debug(`iTaskOrg: User ${userId} marked message ${messageId} as read in room ${roomId}`);
+    }
+  });
+  
+  // iTaskOrg: System message support
+  socket.on('system_message', (data) => {
+    const roomId = data.roomId || data.room;
+    const groupId = data.groupId || socket.groupId;
+    const content = data.content || data.message;
+    
+    if (roomId && content) {
+      const systemMsg = {
+        id: `sys_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        groupId: groupId,
+        content: content,
+        type: 'system',
+        systemEvent: data.eventType || 'system',
+        timestamp: new Date().toISOString(),
+        room: roomId
+      };
+      
+      io.to(roomId).emit('system_message', systemMsg);
     }
   });
 
@@ -506,9 +849,21 @@ io.on('connection', (socket) => {
       if (room) {
         log.info(`User ${username} disconnecting from room ${room}`);
 
-        // Notify room before removing user
+        // Notify room before removing user (legacy)
         if (username) {
           io.to(room).emit('receive', `Server: ${username} left the chat`);
+        }
+        
+        // Emit iTaskOrg-specific event
+        const groupId = socket.groupId || null;
+        const userId = socket.userId || socket.id;
+        if (groupId) {
+          io.to(room).emit('user_left', {
+            groupId: groupId,
+            userId: userId,
+            userName: username,
+            lastSeen: new Date().toISOString()
+          });
         }
 
         // Remove from room tracking
@@ -528,7 +883,7 @@ io.on('connection', (socket) => {
           }
         }
 
-        // Update user count for the room
+        // Update user count for the room (legacy)
         const sockets = io.sockets.adapter.rooms.get(room);
         const count = sockets ? sockets.size : 0;
         io.to(room).emit('user count', {
@@ -536,6 +891,27 @@ io.on('connection', (socket) => {
           active: roomUsers[room] ? roomUsers[room].size : 0,
           room: room
         });
+        
+        // Also emit iTaskOrg room_users update
+        if (groupId) {
+          const users = [];
+          if (sockets) {
+            sockets.forEach(socketId => {
+              const socketData = io.sockets.sockets.get(socketId);
+              if (socketData) {
+                users.push({
+                  userId: socketData.userId || socketId,
+                  userName: socketData.userName || usernames[socketId] || 'Unknown',
+                  lastSeen: new Date().toISOString()
+                });
+              }
+            });
+          }
+          io.to(room).emit('room_users', {
+            groupId: groupId,
+            users: users
+          });
+        }
       }
 
       // Clean up user tracking
