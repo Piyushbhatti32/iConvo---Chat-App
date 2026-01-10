@@ -415,12 +415,27 @@ app.post('/api/upload/image', imageUpload.single('image'), async (req, res) => {
   }
 });
 
-// Serve static files from current directory (or 'public' if you have one)
-const staticDir = path.join(__dirname, "public");
-app.use(express.static(staticDir));
+// ================================
+// VITE FRONTEND (PRODUCTION BUILD)
+// ================================
 
-// If files are in the same directory as server.js, also serve from current directory
-app.use(express.static(__dirname));
+const viteDistPath = path.join(__dirname, "frontend", "dist");
+
+// Serve Vite static assets
+app.use(express.static(viteDistPath));
+
+// OPTIONAL: still serve legacy public folder if needed
+const publicDir = path.join(__dirname, "public");
+if (fs.existsSync(publicDir)) {
+  app.use(express.static(publicDir));
+}
+
+// =====================================
+// SPA FALLBACK (Vite index.html)
+// =====================================
+app.get("*", (req, res) => {
+  res.sendFile(path.join(viteDistPath, "index.html"));
+});
 
 // Store user and room info
 const rooms = {}; // socket.id -> room name
@@ -1646,7 +1661,7 @@ server.listen(PORT, '0.0.0.0', () => {
     });
   });
 
-  console.log(`\nStatic files served from: ${staticDir}`);
+  console.log(`\nFrontend served from: ${viteDistPath}`);
   console.log(`Message persistence: ${config.enableMessagePersistence ? 'ENABLED' : 'DISABLED'}`);
   console.log('\nTo access from other devices on the network, use any of the Network URLs listed above.');
   
