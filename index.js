@@ -3,8 +3,12 @@ const express = require("express");
 const socketio = require("socket.io");
 const path = require("path");
 const os = require('os');
+const fs = require('fs');
 const moment = require('moment-timezone');
 const config = require('./config');
+const multer = require('multer');
+const sharp = require('sharp');
+const crypto = require('crypto');
 
 // Logging utility
 const log = {
@@ -20,7 +24,13 @@ const io = socketio(server, {
   cors: {
     origin: config.corsOrigin,
     methods: ["GET", "POST"]
-  }
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
+  allowUpgrades: true,
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
 });
 
 // Rate limiting and security
@@ -52,6 +62,125 @@ const stats = {
 
 // Message history storage
 const messageHistory = {}; // room -> array of messages
+
+// Message history storage with persistence
+const MESSAGES_DIR = path.join(__dirname, 'data', 'messages');
+
+// Ensure data directory exists
+if (!fs.existsSync(path.join(__dirname, 'data'))) {
+  fs.mkdirSync(path.join(__dirname, 'data'));
+}
+if (!fs.existsSync(MESSAGES_DIR)) {
+  fs.mkdirSync(MESSAGES_DIR);
+}
+
+// ============================================
+// QUICK WINS - ADDITIONAL VARIABLES
+// ============================================
+
+const userProfiles = {}; // userId -> profile data
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'uploads', 'profiles');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (extname && mimetype) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
+
+// Image upload config
+const imageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const uploadDir = path.join(__dirname, 'uploads', 'images');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, `img-${Date.now()}-${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname)}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (extname && mimetype) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
+
+const messageReactions = {}; // messageId -> { emoji -> [userIds] }
+const userStatus = {}; // userId -> { status: 'online'|'offline', lastSeen: timestamp }
+const unreadCounts = {}; // userId -> { roomId -> count }
+const typingTimeouts = {}; // socketId -> timeout
+
+// Load message history from disk
+function loadMessageHistory(room) {
+  if (messageHistory[room]) return messageHistory[room];
+  
+  const filePath = path.join(MESSAGES_DIR, `${sanitizeFilename(room)}.json`);
+  try {
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, 'utf8');
+      messageHistory[room] = JSON.parse(data);
+      log.info(`Loaded ${messageHistory[room].length} messages for room: ${room}`);
+      return messageHistory[room];
+    }
+  } catch (error) {
+    log.error(`Error loading message history for room ${room}:`, error);
+  }
+  
+  messageHistory[room] = [];
+  return messageHistory[room];
+}
+
+// Save message history to disk
+function saveMessageHistory(room) {
+  if (!config.enableMessagePersistence) return;
+  
+  const filePath = path.join(MESSAGES_DIR, `${sanitizeFilename(room)}.json`);
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(messageHistory[room] || [], null, 2));
+    log.debug(`Saved ${(messageHistory[room] || []).length} messages for room: ${room}`);
+  } catch (error) {
+    log.error(`Error saving message history for room ${room}:`, error);
+  }
+}
+
+// Sanitize filename
+function sanitizeFilename(name) {
+  return name.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+}
 
 // Utility functions
 function sanitizeMessage(message) {
@@ -128,6 +257,164 @@ app.get(config.statsPath, (req, res) => {
   res.json(detailedStats);
 });
 
+// API endpoint to get message history
+app.get('/api/messages/:room', (req, res) => {
+  const room = req.params.room;
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = parseInt(req.query.offset) || 0;
+  
+  loadMessageHistory(room);
+  const messages = messageHistory[room] || [];
+  const paginatedMessages = messages.slice(offset, offset + limit);
+  
+  res.json({
+    room: room,
+    messages: paginatedMessages,
+    total: messages.length,
+    offset: offset,
+    limit: limit
+  });
+});
+
+// ============================================
+// QUICK WINS - NEW API ENDPOINTS
+// ============================================
+
+// Profile picture upload endpoint
+app.post('/api/profile/picture', upload.single('profilePicture'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const userId = req.body.userId || 'anonymous';
+    const inputPath = req.file.path;
+    const outputFilename = `profile-${userId}-${Date.now()}.webp`;
+    const outputPath = path.join(__dirname, 'uploads', 'profiles', outputFilename);
+
+    // Resize and optimize image using sharp
+    await sharp(inputPath)
+      .resize(200, 200, {
+        fit: 'cover',
+        position: 'center'
+      })
+      .webp({ quality: 80 })
+      .toFile(outputPath);
+
+    // Delete original file
+    fs.unlinkSync(inputPath);
+
+    // Save profile picture URL to user data
+    const profilePictureUrl = `/uploads/profiles/${outputFilename}`;
+    
+    // Store in your database or memory
+    if (!userProfiles[userId]) {
+      userProfiles[userId] = {};
+    }
+    userProfiles[userId].profilePicture = profilePictureUrl;
+
+    res.json({
+      success: true,
+      profilePicture: profilePictureUrl,
+      message: 'Profile picture uploaded successfully'
+    });
+  } catch (error) {
+    console.error('Profile picture upload error:', error);
+    res.status(500).json({ error: 'Failed to upload profile picture' });
+  }
+});
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Search messages endpoint
+app.get('/api/search', (req, res) => {
+  const { query, room, userId } = req.query;
+  
+  if (!query || query.length < 2) {
+    return res.status(400).json({ error: 'Search query too short' });
+  }
+
+  let results = [];
+  const searchTerm = query.toLowerCase();
+
+  if (room) {
+    // Search in specific room
+    const roomMessages = messageHistory[room] || [];
+    results = roomMessages.filter(msg => 
+      msg.message.toLowerCase().includes(searchTerm) ||
+      msg.username.toLowerCase().includes(searchTerm)
+    );
+  } else {
+    // Search across all rooms (that user has access to)
+    Object.keys(messageHistory).forEach(roomId => {
+      const roomMessages = messageHistory[roomId] || [];
+      const matches = roomMessages.filter(msg => 
+        msg.message.toLowerCase().includes(searchTerm) ||
+        msg.username.toLowerCase().includes(searchTerm)
+      );
+      results.push(...matches);
+    });
+  }
+
+  // Sort by relevance (timestamp)
+  results.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  res.json({
+    query,
+    count: results.length,
+    results: results.slice(0, 50) // Limit to 50 results
+  });
+});
+
+// Image upload endpoint
+app.post('/api/upload/image', imageUpload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const inputPath = req.file.path;
+    const thumbnailFilename = `thumb-${path.basename(req.file.filename, path.extname(req.file.filename))}.webp`;
+    const thumbnailPath = path.join(__dirname, 'uploads', 'images', thumbnailFilename);
+
+    // Create thumbnail
+    await sharp(inputPath)
+      .resize(300, 300, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .webp({ quality: 70 })
+      .toFile(thumbnailPath);
+
+    // Optimize original
+    const optimizedFilename = `opt-${path.basename(req.file.filename, path.extname(req.file.filename))}.webp`;
+    const optimizedPath = path.join(__dirname, 'uploads', 'images', optimizedFilename);
+    
+    await sharp(inputPath)
+      .resize(1920, 1920, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .webp({ quality: 85 })
+      .toFile(optimizedPath);
+
+    // Delete original
+    fs.unlinkSync(inputPath);
+
+    res.json({
+      success: true,
+      image: `/uploads/images/${optimizedFilename}`,
+      thumbnail: `/uploads/images/${thumbnailFilename}`,
+      originalName: req.file.originalname,
+      size: req.file.size
+    });
+  } catch (error) {
+    console.error('Image upload error:', error);
+    res.status(500).json({ error: 'Failed to upload image' });
+  }
+});
+
 // Serve static files from current directory (or 'public' if you have one)
 const staticDir = path.join(__dirname, "public");
 app.use(express.static(staticDir));
@@ -195,6 +482,26 @@ io.on('connection', (socket) => {
       socket.emit("username_updated", { username: data.username });
       
       console.log(`Username restored for ${socket.id}: ${data.username}`);
+    }
+  });
+
+  // Get message history handler
+  socket.on("get_history", (data) => {
+    const room = typeof data === 'object' ? data.room : data;
+    const limit = typeof data === 'object' ? (data.limit || 50) : 50;
+    
+    if (room) {
+      loadMessageHistory(room);
+      const messages = messageHistory[room] || [];
+      const recentMessages = messages.slice(-limit);
+      
+      socket.emit("message_history", {
+        room: room,
+        messages: recentMessages,
+        total: messages.length
+      });
+      
+      log.debug(`Sent ${recentMessages.length} messages to ${socket.id} for room ${room}`);
     }
   });
 
@@ -276,6 +583,7 @@ io.on('connection', (socket) => {
           roomUsers[previousRoom].delete(socket.id);
           if (roomUsers[previousRoom].size === 0) {
             delete roomUsers[previousRoom];
+            saveMessageHistory(previousRoom); // Save on room empty
           }
         }
 
@@ -290,6 +598,7 @@ io.on('connection', (socket) => {
       // Initialize room users set if it doesn't exist
       if (!roomUsers[room]) {
         roomUsers[room] = new Set();
+        loadMessageHistory(room); // Load history when room is created
       }
       roomUsers[room].add(socket.id);
 
@@ -300,7 +609,14 @@ io.on('connection', (socket) => {
       socket.join(room);
 
       // Confirm join to the user first
-      socket.emit("join", { room: room, username: username });
+      loadMessageHistory(room);
+      const recentMessages = (messageHistory[room] || []).slice(-50);
+      
+      socket.emit("join", { 
+        room: room, 
+        username: username,
+        messageHistory: recentMessages
+      });
 
       // Then notify others in the room if broadcast is true
       if (broadcast) {
@@ -340,6 +656,7 @@ io.on('connection', (socket) => {
         roomUsers[room].delete(socket.id);
         if (roomUsers[room].size === 0) {
           delete roomUsers[room];
+          saveMessageHistory(room); // Save on room empty
         }
       }
 
@@ -398,11 +715,15 @@ io.on('connection', (socket) => {
       }
 
       const formattedMessage = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: typeof data === 'object' ? data.id : `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         username: username,
+        userId: typeof data === 'object' ? data.userId : undefined,
         message: message,
-        timestamp: new Date().toISOString(),
-        room: room
+        timestamp: typeof data === 'object' ? data.timestamp : new Date().toISOString(),
+        room: room,
+        status: typeof data === 'object' ? data.status : undefined,
+        replyTo: typeof data === 'object' ? data.replyTo : undefined,
+        replyToMessage: typeof data === 'object' ? data.replyToMessage : undefined
       };
 
       // Store message in history
@@ -416,6 +737,9 @@ io.on('connection', (socket) => {
         messageHistory[room] = messageHistory[room].slice(-config.maxMessageHistory);
       }
 
+      // Save message history periodically
+      saveMessageHistory(room);
+
       // Update statistics
       stats.totalMessages++;
       
@@ -426,6 +750,30 @@ io.on('connection', (socket) => {
 
       // Send confirmation back to sender
       socket.emit("message_sent", formattedMessage);
+
+      // Update unread counts for all users in room except sender
+      const sockets = io.sockets.adapter.rooms.get(room);
+      if (sockets) {
+        sockets.forEach(socketId => {
+          if (socketId !== socket.id) {
+            const userId = io.sockets.sockets.get(socketId).userId || socketId;
+            
+            if (!unreadCounts[userId]) {
+              unreadCounts[userId] = {};
+            }
+            if (!unreadCounts[userId][room]) {
+              unreadCounts[userId][room] = 0;
+            }
+            
+            unreadCounts[userId][room]++;
+            
+            io.to(socketId).emit('unread_count_updated', {
+              room,
+              count: unreadCounts[userId][room]
+            });
+          }
+        });
+      }
     } else {
       log.warn(`Invalid message attempt from ${socket.id} - not in room ${room}`);
       socket.emit("message_error", "You must be in a room to send messages");
@@ -725,6 +1073,30 @@ io.on('connection', (socket) => {
       });
       
       socket.emit('message_sent', formattedMessage);
+
+      // Update unread counts for all users in room except sender
+      const sockets = io.sockets.adapter.rooms.get(roomId);
+      if (sockets) {
+        sockets.forEach(socketId => {
+          if (socketId !== socket.id) {
+            const userId = io.sockets.sockets.get(socketId).userId || socketId;
+            
+            if (!unreadCounts[userId]) {
+              unreadCounts[userId] = {};
+            }
+            if (!unreadCounts[userId][roomId]) {
+              unreadCounts[userId][roomId] = 0;
+            }
+            
+            unreadCounts[userId][roomId]++;
+            
+            io.to(socketId).emit('unread_count_updated', {
+              room: roomId,
+              count: unreadCounts[userId][roomId]
+            });
+          }
+        });
+      }
     } else {
       log.warn(`Invalid message attempt from ${socket.id} - not in room ${roomId}`);
       socket.emit('message_error', 'You must be in a room to send messages');
@@ -833,6 +1205,304 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ============================================
+  // QUICK WINS - NEW SOCKET HANDLERS
+  // ============================================
+
+  // Add reaction to message
+  socket.on('add_reaction', (data) => {
+    const { messageId, emoji, userId, room } = data;
+    
+    if (!messageId || !emoji || !room) {
+      socket.emit('reaction_error', 'Invalid reaction data');
+      return;
+    }
+
+    // Initialize reaction storage
+    if (!messageReactions[messageId]) {
+      messageReactions[messageId] = {};
+    }
+    if (!messageReactions[messageId][emoji]) {
+      messageReactions[messageId][emoji] = [];
+    }
+
+    // Add user to reaction
+    if (!messageReactions[messageId][emoji].includes(userId)) {
+      messageReactions[messageId][emoji].push(userId);
+      
+      // Broadcast reaction to room
+      io.to(room).emit('reaction_added', {
+        messageId,
+        emoji,
+        userId,
+        userName: usernames[socket.id],
+        reactions: messageReactions[messageId]
+      });
+      
+      log.debug(`Reaction ${emoji} added to message ${messageId} by ${userId}`);
+    }
+  });
+
+  // Remove reaction from message
+  socket.on('remove_reaction', (data) => {
+    const { messageId, emoji, userId, room } = data;
+    
+    if (messageReactions[messageId] && messageReactions[messageId][emoji]) {
+      const index = messageReactions[messageId][emoji].indexOf(userId);
+      if (index > -1) {
+        messageReactions[messageId][emoji].splice(index, 1);
+        
+        // Remove emoji if no users left
+        if (messageReactions[messageId][emoji].length === 0) {
+          delete messageReactions[messageId][emoji];
+        }
+        
+        // Broadcast reaction removal
+        io.to(room).emit('reaction_removed', {
+          messageId,
+          emoji,
+          userId,
+          reactions: messageReactions[messageId]
+        });
+      }
+    }
+  });
+
+  // Send reply to message
+  socket.on('send_reply', (data) => {
+    const { room, message, replyTo, userId } = data;
+    const username = usernames[socket.id];
+
+    if (!validateInput(message, config.maxMessageLength)) {
+      socket.emit('message_error', 'Message is empty or too long');
+      return;
+    }
+
+    const sanitizedMessage = sanitizeMessage(message);
+    
+    // Find original message
+    const originalMessage = messageHistory[room]?.find(msg => msg.id === replyTo);
+    
+    const formattedMessage = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      username: username,
+      userId: userId,
+      message: sanitizedMessage,
+      timestamp: new Date().toISOString(),
+      room: room,
+      type: 'reply',
+      replyTo: {
+        id: replyTo,
+        username: originalMessage?.username,
+        message: originalMessage?.message,
+        timestamp: originalMessage?.timestamp
+      }
+    };
+
+    // Store and broadcast
+    if (!messageHistory[room]) {
+      messageHistory[room] = [];
+    }
+    messageHistory[room].push(formattedMessage);
+    
+    io.to(room).emit('receive', formattedMessage);
+    socket.emit('message_sent', formattedMessage);
+    
+    log.debug(`Reply sent in ${room}: ${username} replied to ${replyTo}`);
+  });
+
+  // Edit message
+  socket.on('edit_message', (data) => {
+    const { messageId, newMessage, room } = data;
+    const userId = socket.userId || socket.id;
+    
+    if (!validateInput(newMessage, config.maxMessageLength)) {
+      socket.emit('message_error', 'Message is empty or too long');
+      return;
+    }
+
+    // Find message in history
+    const roomMessages = messageHistory[room];
+    if (!roomMessages) {
+      socket.emit('edit_error', 'Room not found');
+      return;
+    }
+
+    const messageIndex = roomMessages.findIndex(msg => msg.id === messageId);
+    if (messageIndex === -1) {
+      socket.emit('edit_error', 'Message not found');
+      return;
+    }
+
+    const message = roomMessages[messageIndex];
+    
+    // Verify ownership
+    if (message.userId !== userId && message.username !== usernames[socket.id]) {
+      socket.emit('edit_error', 'You can only edit your own messages');
+      return;
+    }
+
+    // Check edit time limit (15 minutes)
+    const messageAge = Date.now() - new Date(message.timestamp).getTime();
+    if (messageAge > 15 * 60 * 1000) {
+      socket.emit('edit_error', 'Message is too old to edit (15 minute limit)');
+      return;
+    }
+
+    // Update message
+    message.message = sanitizeMessage(newMessage);
+    message.edited = true;
+    message.editedAt = new Date().toISOString();
+
+    // Broadcast edit
+    io.to(room).emit('message_edited', {
+      messageId,
+      newMessage: message.message,
+      edited: true,
+      editedAt: message.editedAt
+    });
+
+    log.debug(`Message ${messageId} edited in ${room}`);
+  });
+
+  // Delete message
+  socket.on('delete_message', (data) => {
+    const { messageId, room, deleteFor } = data; // deleteFor: 'me' | 'everyone'
+    const userId = socket.userId || socket.id;
+    
+    const roomMessages = messageHistory[room];
+    if (!roomMessages) {
+      socket.emit('delete_error', 'Room not found');
+      return;
+    }
+
+    const messageIndex = roomMessages.findIndex(msg => msg.id === messageId);
+    if (messageIndex === -1) {
+      socket.emit('delete_error', 'Message not found');
+      return;
+    }
+
+    const message = roomMessages[messageIndex];
+    
+    // Verify ownership for "delete for everyone"
+    if (deleteFor === 'everyone') {
+      if (message.userId !== userId && message.username !== usernames[socket.id]) {
+        socket.emit('delete_error', 'You can only delete your own messages for everyone');
+        return;
+      }
+
+      // Check delete time limit (1 hour)
+      const messageAge = Date.now() - new Date(message.timestamp).getTime();
+      if (messageAge > 60 * 60 * 1000) {
+        socket.emit('delete_error', 'Message is too old to delete for everyone (1 hour limit)');
+        return;
+      }
+
+      // Delete from history
+      roomMessages.splice(messageIndex, 1);
+      
+      // Broadcast deletion
+      io.to(room).emit('message_deleted', {
+        messageId,
+        deletedBy: usernames[socket.id],
+        deleteFor: 'everyone'
+      });
+    } else {
+      // Delete for me only - just send to this user
+      socket.emit('message_deleted', {
+        messageId,
+        deleteFor: 'me'
+      });
+    }
+
+    log.debug(`Message ${messageId} deleted in ${room} (${deleteFor})`);
+  });
+
+  // Update user status
+  socket.on('update_status', (data) => {
+    const userId = data.userId || socket.userId || socket.id;
+    const status = data.status || 'online';
+    
+    userStatus[userId] = {
+      status: status,
+      lastSeen: new Date().toISOString()
+    };
+
+    // Broadcast status to all rooms user is in
+    const userRooms = Object.keys(rooms).filter(sid => rooms[sid] && usernames[sid] === usernames[socket.id]);
+    userRooms.forEach(sid => {
+      const room = rooms[sid];
+      io.to(room).emit('user_status_changed', {
+        userId,
+        username: usernames[socket.id],
+        status: status,
+        lastSeen: userStatus[userId].lastSeen
+      });
+    });
+  });
+
+  // Mark messages as read
+  socket.on('mark_as_read', (data) => {
+    const { room, userId } = data;
+    
+    if (!unreadCounts[userId]) {
+      unreadCounts[userId] = {};
+    }
+    
+    unreadCounts[userId][room] = 0;
+    
+    socket.emit('unread_count_updated', {
+      room,
+      count: 0
+    });
+  });
+
+  // Enhanced typing indicator with timeout
+  socket.on('typing', (data) => {
+    const room = data.room || data.roomId;
+    const userName = data.userName || usernames[socket.id];
+    
+    if (rooms[socket.id] === room && userName) {
+      // Clear existing timeout
+      if (typingTimeouts[socket.id]) {
+        clearTimeout(typingTimeouts[socket.id]);
+      }
+
+      // Broadcast typing
+      socket.to(room).emit('typing', {
+        room,
+        userName,
+        isTyping: true
+      });
+
+      // Auto-stop typing after 3 seconds
+      typingTimeouts[socket.id] = setTimeout(() => {
+        socket.to(room).emit('typing', {
+          room,
+          userName,
+          isTyping: false
+        });
+        delete typingTimeouts[socket.id];
+      }, 3000);
+    }
+  });
+
+  socket.on('stop_typing', (data) => {
+    const room = data.room || data.roomId;
+    const userName = data.userName || usernames[socket.id];
+    
+    if (typingTimeouts[socket.id]) {
+      clearTimeout(typingTimeouts[socket.id]);
+      delete typingTimeouts[socket.id];
+    }
+
+    socket.to(room).emit('typing', {
+      room,
+      userName,
+      isTyping: false
+    });
+  });
+
   // Handle user disconnection
   socket.on('disconnect', () => {
     try {
@@ -845,6 +1515,13 @@ io.on('connection', (socket) => {
       // Clean up rate limiting maps
       messageLimits.delete(socket.id);
       joinLimits.delete(socket.id);
+
+      // Update user status to offline
+      const userId = socket.userId || socket.id;
+      userStatus[userId] = {
+        status: 'offline',
+        lastSeen: new Date().toISOString()
+      };
 
       if (room) {
         log.info(`User ${username} disconnecting from room ${room}`);
@@ -864,6 +1541,14 @@ io.on('connection', (socket) => {
             userName: username,
             lastSeen: new Date().toISOString()
           });
+
+          // Broadcast offline status
+          io.to(room).emit('user_status_changed', {
+            userId,
+            username: username,
+            status: 'offline',
+            lastSeen: userStatus[userId].lastSeen
+          });
         }
 
         // Remove from room tracking
@@ -871,7 +1556,7 @@ io.on('connection', (socket) => {
           roomUsers[room].delete(socket.id);
           if (roomUsers[room].size === 0) {
             delete roomUsers[room];
-            delete anonymousCount[room];
+            saveMessageHistory(room); // Save on disconnect
           }
         }
 
@@ -962,6 +1647,7 @@ server.listen(PORT, '0.0.0.0', () => {
   });
 
   console.log(`\nStatic files served from: ${staticDir}`);
+  console.log(`Message persistence: ${config.enableMessagePersistence ? 'ENABLED' : 'DISABLED'}`);
   console.log('\nTo access from other devices on the network, use any of the Network URLs listed above.');
   
   log.info('Server started successfully');
@@ -997,6 +1683,14 @@ setInterval(() => {
     }
   }
   
+  // Auto-save all active rooms
+  if (config.enableMessagePersistence) {
+    Object.keys(roomUsers).forEach(room => {
+      saveMessageHistory(room);
+    });
+    log.debug('Auto-saved message histories');
+  }
+  
   // Log statistics periodically
   if (config.logLevel === 'debug') {
     log.debug(`Active connections: ${stats.currentConnections}, Rate limit maps: connection(${connectionLimits.size}), message(${messageLimits.size}), join(${joinLimits.size})`);
@@ -1020,6 +1714,15 @@ setInterval(() => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   log.info('SIGTERM received, shutting down gracefully');
+  
+  // Save all message histories
+  if (config.enableMessagePersistence) {
+    Object.keys(messageHistory).forEach(room => {
+      saveMessageHistory(room);
+    });
+    log.info('All message histories saved');
+  }
+  
   server.close(() => {
     log.info('Server closed');
     process.exit(0);
@@ -1028,6 +1731,15 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   log.info('SIGINT received, shutting down gracefully');
+  
+  // Save all message histories
+  if (config.enableMessagePersistence) {
+    Object.keys(messageHistory).forEach(room => {
+      saveMessageHistory(room);
+    });
+    log.info('All message histories saved');
+  }
+  
   server.close(() => {
     log.info('Server closed');
     process.exit(0);

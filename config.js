@@ -15,9 +15,9 @@ module.exports = {
   maxMessagesPerWindow: parseInt(process.env.MAX_MESSAGES_PER_WINDOW) || 50,
   maxJoinsPerWindow: parseInt(process.env.MAX_JOINS_PER_WINDOW) || 10,
   
-  // Message History
+  // Message History & Persistence
   maxMessageHistory: parseInt(process.env.MAX_MESSAGE_HISTORY) || 100,
-  enableMessagePersistence: process.env.ENABLE_MESSAGE_PERSISTENCE === 'true',
+  enableMessagePersistence: process.env.ENABLE_MESSAGE_PERSISTENCE !== 'false', // ENABLED by default
   
   // Features
   enableTypingIndicators: process.env.ENABLE_TYPING_INDICATORS !== 'false',

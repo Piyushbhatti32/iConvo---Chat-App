@@ -70,6 +70,36 @@ npm start
 - **Health Check**: `http://localhost:3000/health`
 - **Statistics**: `http://localhost:3000/stats`
 
+## 🛠️ Development Setup
+
+For development with hot-reloading for both frontend and backend:
+
+### Option 1: Using the batch script (Windows)
+```bash
+run-dev.bat
+```
+
+### Option 2: Using PowerShell script (Windows)
+```bash
+.\run-dev.ps1
+```
+
+### Option 3: Using shell script (Linux/Mac)
+```bash
+chmod +x run-dev.sh
+./run-dev.sh
+```
+
+### Option 4: Using npm script (Cross-platform)
+```bash
+npm run dev:all
+```
+
+This will start both the backend server and frontend development server simultaneously.
+
+- **Backend**: Runs with nodemon for auto-restart on changes
+- **Frontend**: Runs with Vite dev server (typically http://localhost:5173)
+
 ## 🎯 Features in Detail
 
 ### Chat Rooms

@@ -1,0 +1,512 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-bg-primary text-text-primary;
+  }
+}
+
+/* 
+ * iConvo Responsive Styles
+ * Optimized for all screen sizes from mobile to desktop
+ */
+
+/* Base Styles */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+/* Custom Scrollbar for Webkit Browsers */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* For Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5563 #1f2937;
+}
+
+/* Mobile-First Responsive Breakpoints */
+
+/* Extra Small Devices (phones, less than 640px) */
+@media (max-width: 639px) {
+  /* Ensure full-screen chat experience */
+  .chat-container {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+  }
+
+  /* Sidebar overlay on mobile */
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 30;
+  }
+
+  /* Messages area padding adjustments */
+  .messages-area {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* Message bubbles max width on mobile */
+  .message-bubble {
+    max-width: 85%;
+  }
+
+  /* Input area adjustments */
+  .input-area {
+    padding: 12px;
+  }
+
+  .input-field {
+    font-size: 16px; /* Prevents zoom on iOS */
+    min-height: 44px; /* iOS minimum touch target */
+  }
+
+  /* Header text sizes */
+  .chat-header h2 {
+    font-size: 16px;
+  }
+
+  .chat-header p {
+    font-size: 12px;
+  }
+
+  /* Room list items */
+  .room-item {
+    padding: 12px;
+  }
+
+  .room-avatar {
+    width: 48px;
+    height: 48px;
+    font-size: 18px;
+  }
+
+  /* Emoji picker full width on mobile */
+  .emoji-picker {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 50vh;
+    border-radius: 16px 16px 0 0;
+  }
+
+  /* Context menu adjustments */
+  .context-menu {
+    min-width: 200px;
+    max-width: calc(100vw - 32px);
+  }
+
+  /* Button sizing for touch */
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Prevent horizontal scroll */
+  body {
+    overflow-x: hidden;
+  }
+
+  /* Safe area insets for notched devices */
+  .chat-header {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .input-area {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
+/* Small Devices (landscape phones, 640px and up) */
+@media (min-width: 640px) and (max-width: 767px) {
+  .sidebar {
+    width: 280px;
+  }
+
+  .message-bubble {
+    max-width: 80%;
+  }
+
+  .input-field {
+    font-size: 15px;
+  }
+}
+
+/* Medium Devices (tablets, 768px and up) */
+@media (min-width: 768px) {
+  .sidebar {
+    width: 320px;
+    position: relative;
+    transform: none !important;
+  }
+
+  .message-bubble {
+    max-width: 70%;
+  }
+
+  /* Two-column layout */
+  .app-container {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+  }
+
+  /* Remove mobile menu button */
+  .mobile-menu-button {
+    display: none;
+  }
+
+  /* Sidebar always visible */
+  .sidebar-overlay {
+    display: none;
+  }
+}
+
+/* Large Devices (desktops, 1024px and up) */
+@media (min-width: 1024px) {
+  .sidebar {
+    width: 360px;
+  }
+
+  .app-container {
+    grid-template-columns: 360px 1fr;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  .message-bubble {
+    max-width: 65%;
+  }
+
+  /* Larger text for better readability */
+  .chat-header h2 {
+    font-size: 18px;
+  }
+
+  .message-text {
+    font-size: 15px;
+  }
+}
+
+/* Extra Large Devices (large desktops, 1280px and up) */
+@media (min-width: 1280px) {
+  .sidebar {
+    width: 400px;
+  }
+
+  .app-container {
+    grid-template-columns: 400px 1fr;
+  }
+
+  .message-bubble {
+    max-width: 60%;
+  }
+
+  /* Comfortable spacing */
+  .messages-area {
+    padding-left: 48px;
+    padding-right: 48px;
+  }
+}
+
+/* Landscape Orientation Optimizations */
+@media (orientation: landscape) and (max-height: 600px) {
+  /* Reduce vertical padding in landscape mode */
+  .chat-header {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .input-area {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .messages-area {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  /* Compact message spacing */
+  .message {
+    margin-bottom: 8px;
+  }
+}
+
+/* High DPI / Retina Displays */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  /* Sharper borders and shadows */
+  .message-bubble {
+    border: 0.5px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .sidebar {
+    border-right: 0.5px solid rgba(255, 255, 255, 0.1);
+  }
+}
+
+/* Dark Mode Enhancements (if system prefers dark) */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #0b141a;
+    --bg-secondary: #111b21;
+    --bg-tertiary: #202c33;
+  }
+}
+
+/* Reduced Motion for Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Print Styles */
+@media print {
+  .sidebar,
+  .input-area,
+  .chat-header {
+    display: none;
+  }
+
+  .messages-area {
+    height: auto;
+    overflow: visible;
+  }
+
+  .message-bubble {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
+
+/* Touch Device Optimizations */
+@media (hover: none) and (pointer: coarse) {
+  /* Larger touch targets */
+  button,
+  a,
+  .clickable {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Remove hover effects on touch devices */
+  .hover\:bg-gray-700:hover,
+  .hover\:bg-gray-800:hover {
+    background-color: inherit;
+  }
+
+  /* Active states for touch feedback */
+  button:active {
+    opacity: 0.7;
+  }
+
+  /* Disable long-press context menu */
+  * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Allow text selection in message areas */
+  .message-text,
+  .input-field {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+/* Animations for smooth transitions */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Message animation */
+.message {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Sidebar slide animation */
+.sidebar.show {
+  animation: slideInLeft 0.3s ease-out;
+}
+
+/* Loading states */
+.loading {
+  position: relative;
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border: 2px solid #3b82f6;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Connection status indicator */
+.connection-status {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  border-radius: 20px;
+  font-size: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-status.connected {
+  background: rgba(34, 197, 94, 0.9);
+}
+
+.connection-status.disconnected {
+  background: rgba(239, 68, 68, 0.9);
+}
+
+/* Utility Classes */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.truncate-2-lines {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Focus styles for accessibility */
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* iOS Safari specific fixes */
+@supports (-webkit-touch-callout: none) {
+  /* Fix for iOS Safari bottom bar */
+  .chat-container {
+    height: -webkit-fill-available;
+  }
+
+  /* Fix input zoom issue */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Android Chrome specific fixes */
+@media screen and (max-width: 767px) {
+  /* Prevent address bar from affecting layout */
+  .chat-container {
+    height: 100dvh; /* Dynamic viewport height */
+  }
+}
+
+/* Tablet landscape optimization */
+@media (min-width: 768px) and (max-width: 1023px) and (orientation: landscape) {
+  .sidebar {
+    width: 280px;
+  }
+
+  .message-bubble {
+    max-width: 65%;
+  }
+}

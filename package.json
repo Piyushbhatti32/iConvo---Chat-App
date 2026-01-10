@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "dev:all": "concurrently \"npm run dev\" \"cd frontend && npm run dev\"",
+    "dev:all:win": "start \"Backend\" cmd /k \"npm run dev\" && start \"Frontend\" cmd /k \"cd frontend && npm run dev\""
   },
   "keywords": [
     "chat",
@@ -18,10 +20,13 @@
   "dependencies": {
     "express": "^4.18.2",
     "moment-timezone": "^0.6.0",
+    "multer": "^2.0.2",
+    "sharp": "^0.34.5",
     "socket.io": "^4.7.2"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "concurrently": "^8.2.2"
   },
   "engines": {
     "node": ">=14.0.0"
