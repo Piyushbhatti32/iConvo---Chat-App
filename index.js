@@ -1,4 +1,5 @@
 const http = require("http");
+const https = require("https");
 const express = require("express");
 const socketio = require("socket.io");
 const path = require("path");
@@ -454,6 +455,12 @@ io.on('connection', (socket) => {
   const userName = auth.userName || null;
   const token = auth.token || null; // Firebase token (can be verified if needed)
   
+  // Store auth data in socket for later use
+  socket.userId = userId;
+  socket.userName = userName;
+  socket.groupId = groupId;
+  socket.authToken = token;
+  
   log.info(`New user connected: ${socket.id} from ${clientIP}${userId ? ` (userId: ${userId}, groupId: ${groupId})` : ''}`);
   
   // Update statistics
@@ -500,23 +507,99 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Function to fetch message history from iTaskOrg API
+  async function fetchItaskorgHistory(groupId, limit, authToken) {
+    if (!config.enableItaskorgIntegration) return [];
+    
+    try {
+      const url = `${config.itaskorgApiUrl}/api/groups/${groupId}/messages?limit=${limit}`;
+      const parsedUrl = new URL(url);
+      
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'User-Agent': 'iConvo-Socket-Server/1.0'
+        }
+      };
+      
+      return new Promise((resolve, reject) => {
+        const req = (parsedUrl.protocol === 'https:' ? https : http).request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => data += chunk);
+          res.on('end', () => {
+            try {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                const response = JSON.parse(data);
+                const messages = response.messages || [];
+                log.debug(`Fetched ${messages.length} messages from iTaskOrg for group ${groupId}`);
+                resolve(messages);
+              } else {
+                log.warn(`Failed to fetch history from iTaskOrg: ${res.statusCode} - ${data}`);
+                resolve([]);
+              }
+            } catch (e) {
+              log.error('Error parsing iTaskOrg history response:', e);
+              resolve([]);
+            }
+          });
+        });
+        
+        req.on('error', (e) => {
+          log.error('Error fetching history from iTaskOrg:', e);
+          resolve([]);
+        });
+        
+        req.end();
+      });
+    } catch (error) {
+      log.error('Error in fetchItaskorgHistory:', error);
+      return [];
+    }
+  }
+
   // Get message history handler
   socket.on("get_history", (data) => {
     const room = typeof data === 'object' ? data.room : data;
     const limit = typeof data === 'object' ? (data.limit || 50) : 50;
     
     if (room) {
-      loadMessageHistory(room);
-      const messages = messageHistory[room] || [];
-      const recentMessages = messages.slice(-limit);
-      
-      socket.emit("message_history", {
-        room: room,
-        messages: recentMessages,
-        total: messages.length
-      });
-      
-      log.debug(`Sent ${recentMessages.length} messages to ${socket.id} for room ${room}`);
+      // Check if this is an iTaskOrg group room
+      const groupMatch = room.match(/^group-(.+)$/);
+      if (groupMatch && config.enableItaskorgIntegration) {
+        const groupId = groupMatch[1];
+        // Fetch history from iTaskOrg API
+        fetchItaskorgHistory(groupId, limit, socket.authToken).then(messages => {
+          socket.emit("message_history", {
+            room: room,
+            messages: messages || [],
+            total: messages ? messages.length : 0
+          });
+        }).catch(err => {
+          log.error('Failed to fetch history from iTaskOrg:', err);
+          socket.emit("message_history", {
+            room: room,
+            messages: [],
+            total: 0
+          });
+        });
+      } else {
+        // Use local history for regular iConvo rooms
+        loadMessageHistory(room);
+        const messages = messageHistory[room] || [];
+        const recentMessages = messages.slice(-limit);
+        
+        socket.emit("message_history", {
+          room: room,
+          messages: recentMessages,
+          total: messages.length
+        });
+        
+        log.debug(`Sent ${recentMessages.length} messages to ${socket.id} for room ${room}`);
+      }
     }
   });
 
@@ -1017,6 +1100,70 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Function to send message to iTaskOrg API
+  async function sendMessageToItaskorg(messageData, groupId, authToken) {
+    if (!config.enableItaskorgIntegration) return;
+    
+    try {
+      const postData = JSON.stringify({
+        content: messageData.content,
+        replyTo: messageData.replyTo,
+        mentions: messageData.mentions,
+        type: messageData.type,
+        attachments: messageData.attachments
+      });
+      
+      const url = `${config.itaskorgApiUrl}/api/groups/${groupId}/messages`;
+      const parsedUrl = new URL(url);
+      
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+          'Authorization': `Bearer ${authToken}`,
+          'User-Agent': 'iConvo-Socket-Server/1.0'
+        }
+      };
+      
+      return new Promise((resolve, reject) => {
+        const req = (parsedUrl.protocol === 'https:' ? https : http).request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => data += chunk);
+          res.on('end', () => {
+            try {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                const response = JSON.parse(data);
+                log.debug(`Message stored in iTaskOrg: ${response.id}`);
+                resolve(response);
+              } else {
+                log.warn(`Failed to store message in iTaskOrg: ${res.statusCode} - ${data}`);
+                resolve(null);
+              }
+            } catch (e) {
+              log.error('Error parsing iTaskOrg response:', e);
+              resolve(null);
+            }
+          });
+        });
+        
+        req.on('error', (e) => {
+          log.error('Error sending message to iTaskOrg:', e);
+          resolve(null);
+        });
+        
+        req.write(postData);
+        req.end();
+      });
+    } catch (error) {
+      log.error('Error in sendMessageToItaskorg:', error);
+      return null;
+    }
+  }
+  
   // iTaskOrg: Send message
   socket.on('send_message', (data) => {
     const roomId = data.roomId || data.room;
@@ -1074,6 +1221,11 @@ io.on('connection', (socket) => {
       
       stats.totalMessages++;
       log.debug(`iTaskOrg message from ${userName} in ${roomId}: ${sanitizedMessage}`);
+      
+      // Store message in iTaskOrg database
+      sendMessageToItaskorg(formattedMessage, groupId, socket.authToken).catch(err => {
+        log.error('Failed to store message in iTaskOrg:', err);
+      });
       
       // Emit iTaskOrg-specific event
       io.to(roomId).emit('message', formattedMessage);

@@ -46,8 +46,9 @@ module.exports = {
     { name: 'Music', description: 'Music and entertainment', icon: '🎵', maxUsers: 50 }
   ],
   
-  // Moderation
-  enableProfanityFilter: process.env.ENABLE_PROFANITY_FILTER === 'true',
+  // iTaskOrg Integration
+  itaskorgApiUrl: process.env.ITASKORG_API_URL || 'https://itaskorg.vercel.app',
+  enableItaskorgIntegration: process.env.ENABLE_ITASKORG_INTEGRATION !== 'false', // ENABLED by default
   enableSpamProtection: process.env.ENABLE_SPAM_PROTECTION !== 'false',
   enableAutoModeration: process.env.ENABLE_AUTO_MODERATION === 'true',
   
