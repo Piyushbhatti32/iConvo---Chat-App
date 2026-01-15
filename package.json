@@ -29,6 +29,6 @@
     "concurrently": "^8.2.2"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18"
   }
 }
